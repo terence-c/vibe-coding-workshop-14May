@@ -655,6 +655,196 @@ a {
   accent-color: var(--ink);
 }
 
+.task-card.is-overdue {
+  border: 2px solid #e5392d;
+  background: linear-gradient(135deg, currentColor 0%, transparent 100%);
+  position: relative;
+}
+
+.task-card.is-overdue::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: #e5392d;
+}
+
+.is-overdue-text {
+  color: #e5392d;
+  font-weight: 600;
+}
+
+.overdue-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  background: #e5392d;
+  color: white;
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.task-card__edit-btn {
+  display: inline-block;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  background: rgba(25, 29, 17, 0.1);
+  border: 1px solid rgba(25, 29, 17, 0.2);
+  border-radius: 0.3rem;
+  cursor: pointer;
+  transition: all 150ms ease;
+  color: rgba(25, 29, 17, 0.8);
+}
+
+.task-card__edit-btn:hover {
+  background: rgba(25, 29, 17, 0.2);
+  border-color: var(--ink);
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(25, 29, 17, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+
+.modal {
+  background: var(--surface-strong);
+  border: 2px solid var(--ink);
+  box-shadow: var(--shadow);
+  border-radius: 0.5rem;
+  max-width: 32rem;
+  width: min(90vw, 32rem);
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal--small {
+  max-width: 22rem;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.modal-close {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  border: 1.5px solid var(--line);
+  background: rgba(255, 255, 255, 0.7);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.modal-close:hover {
+  background: white;
+  border-color: var(--ink);
+}
+
+.modal-content {
+  padding: 1.5rem;
+  display: grid;
+  gap: 0.9rem;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.modal-content > label,
+.modal-content > .task-form__grid {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.modal-content label span {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.modal-content input,
+.modal-content textarea,
+.modal-content select {
+  width: 100%;
+  border: 1.5px solid var(--line);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--ink);
+  padding: 0.95rem 1rem;
+  border-radius: 0.45rem;
+  outline: none;
+  font-family: inherit;
+}
+
+.modal-content input:focus,
+.modal-content textarea:focus,
+.modal-content select:focus {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 3px rgba(130, 211, 222, 0.35);
+}
+
+.modal-content textarea {
+  resize: vertical;
+  min-height: 7rem;
+}
+
+.modal-content > .task-form__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 0.75rem;
+  padding: 1.5rem;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.modal-actions button {
+  flex: 1;
+}
+
+.submit-button--danger {
+  background: #e5392d;
+  border-color: #c41a0f;
+  color: white;
+}
+
+.submit-button--danger:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: var(--shadow);
+}
+
 .empty-state {
   display: grid;
   gap: 0.75rem;

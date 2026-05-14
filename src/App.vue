@@ -6,6 +6,7 @@ import {
   toggleTask as toggleTaskInDb,
   deleteTask as deleteTaskInDb,
   clearCompleted as clearCompletedInDb,
+  updateTask as updateTaskInDb,
 } from './tasks.js'
 
 type Filter = 'all' | 'open' | 'done'
@@ -45,11 +46,23 @@ const longDateFormatter = new Intl.DateTimeFormat('en-SG', {
 const tasks = ref<Task[]>(getTasks() as Task[])
 const activeFilter = ref<Filter>('all')
 const searchTerm = ref('')
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const newTitle = ref('')
 const newDetails = ref('')
 const newCategory = ref<Category>('Tool')
 const newPriority = ref<Priority>('High')
 const newDue = ref(todayInput)
+
+// Edit modal state
+const editingTask = ref<Task | null>(null)
+const editTitle = ref('')
+const editDetails = ref('')
+const editCategory = ref<Category>('Tool')
+const editPriority = ref<Priority>('High')
+const editDue = ref('')
+
+// Delete confirmation state
+const taskToDelete = ref<number | null>(null)
 
 const visibleTasks = computed(() => {
   const query = searchTerm.value.trim().toLowerCase()
@@ -105,6 +118,11 @@ const spotlightTask = computed(() => {
 
 const currentDateLabel = longDateFormatter.format(new Date())
 
+const isOverdue = (due: string): boolean => {
+  const today = new Date().toLocaleDateString('en-CA')
+  return due < today
+}
+
 function refresh() {
   tasks.value = getTasks() as Task[]
 }
@@ -137,9 +155,58 @@ function toggleTask(taskId: number) {
   refresh()
 }
 
-function removeTask(taskId: number) {
-  deleteTaskInDb(taskId)
+function openEditModal(task: Task) {
+  editingTask.value = task
+  editTitle.value = task.title
+  editDetails.value = task.details
+  editCategory.value = task.category
+  editPriority.value = task.priority
+  editDue.value = task.due
+}
+
+function closeEditModal() {
+  editingTask.value = null
+  editTitle.value = ''
+  editDetails.value = ''
+  editCategory.value = 'Tool'
+  editPriority.value = 'High'
+  editDue.value = ''
+}
+
+function saveTaskEdit() {
+  if (!editingTask.value || !editTitle.value.trim()) {
+    return
+  }
+
+  updateTaskInDb(editingTask.value.id, {
+    title: editTitle.value.trim(),
+    details: editDetails.value.trim() || 'No extra notes added yet.',
+    category: editCategory.value,
+    priority: editPriority.value,
+    due: editDue.value,
+  })
   refresh()
+  closeEditModal()
+}
+
+function promptDeleteTask(taskId: number) {
+  taskToDelete.value = taskId
+}
+
+function confirmDelete() {
+  if (taskToDelete.value !== null) {
+    deleteTaskInDb(taskToDelete.value)
+    refresh()
+    taskToDelete.value = null
+  }
+}
+
+function cancelDelete() {
+  taskToDelete.value = null
+}
+
+function focusSearch() {
+  searchInputRef.value?.focus()
 }
 
 function clearCompleted() {
@@ -180,13 +247,8 @@ function cardTone(category: Category) {
     <div class="grid-overlay" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">I'm organizing...</p>
-      <div class="masthead__title-row">
-        <button class="hero-orb" type="button" aria-hidden="true">
-          <span class="material-symbols-outlined">expand_more</span>
-        </button>
-        <h1>{{ filterLabel }}</h1>
-      </div>
+      <p class="eyebrow">Your tasks</p>
+      <h1>{{ filterLabel }}</h1>
       <p class="masthead__lede">
         Capture work quickly, sort it by signal, and keep the board moving with a clean studio
         rhythm.
@@ -207,7 +269,7 @@ function cardTone(category: Category) {
           <span class="stat-pill__label">Today</span>
           <span class="stat-pill__value">{{ currentDateLabel }}</span>
         </div>
-        <button class="icon-button" type="button" aria-label="Search tasks">
+        <button class="icon-button" type="button" aria-label="Focus search" @click="focusSearch">
           <span class="material-symbols-outlined">search</span>
         </button>
       </div>
@@ -318,7 +380,12 @@ function cardTone(category: Category) {
           <span>Search</span>
           <div>
             <span class="material-symbols-outlined">search</span>
-            <input v-model="searchTerm" type="search" placeholder="Search title, notes, or tag" />
+            <input
+              ref="searchInputRef"
+              v-model="searchTerm"
+              type="search"
+              placeholder="Search title, notes, or tag"
+            />
           </div>
         </label>
 
@@ -361,17 +428,25 @@ function cardTone(category: Category) {
             v-for="task in visibleTasks"
             :key="task.id"
             class="task-card"
-            :class="[cardTone(task.category), { 'is-done': task.done }]"
+            :class="[cardTone(task.category), { 'is-done': task.done, 'is-overdue': !task.done && isOverdue(task.due) }]"
           >
             <div class="task-card__top">
               <div>
                 <span class="task-card__label">{{ task.category }}</span>
                 <h3>{{ task.title }}</h3>
+                <button
+                  class="task-card__edit-btn"
+                  type="button"
+                  @click="openEditModal(task)"
+                  aria-label="Edit task"
+                >
+                  Edit
+                </button>
               </div>
               <button
                 class="icon-button icon-button--small"
                 type="button"
-                @click="removeTask(task.id)"
+                @click="promptDeleteTask(task.id)"
                 aria-label="Remove task"
               >
                 <span class="material-symbols-outlined">close</span>
@@ -381,7 +456,10 @@ function cardTone(category: Category) {
             <p class="task-card__details">{{ task.details }}</p>
 
             <div class="task-card__meta">
-              <span>Due {{ dueText(task.due) }}</span>
+              <span :class="{ 'is-overdue-text': !task.done && isOverdue(task.due) }">
+                Due {{ dueText(task.due) }}
+                <span v-if="!task.done && isOverdue(task.due)" class="overdue-badge">Overdue</span>
+              </span>
               <span>{{ task.priority }}</span>
             </div>
 
@@ -405,18 +483,85 @@ function cardTone(category: Category) {
         <p class="brand-name">d.school style, todo logic.</p>
         <p class="brand-caption">Built for quick capture, visual sorting, and local persistence.</p>
       </div>
-
-      <div class="site-footer__links">
-        <a href="#">About</a>
-        <a href="#">Study</a>
-        <a href="#">Innovate</a>
-        <a href="#">Privacy</a>
-      </div>
     </footer>
 
-    <section class="panel" style="margin-top: 2rem;">
-      <div id="disqus_thread"></div>
-      <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
-    </section>
+    <!-- Edit Task Modal -->
+    <div v-if="editingTask" class="modal-overlay" @click="closeEditModal">
+      <div class="modal" @click.stop>
+        <div class="modal-header">
+          <h2>Edit Task</h2>
+          <button
+            class="modal-close"
+            type="button"
+            @click="closeEditModal"
+            aria-label="Close modal"
+          >
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        <form class="modal-content" @submit.prevent="saveTaskEdit">
+          <label>
+            <span>Task name</span>
+            <input v-model="editTitle" type="text" />
+          </label>
+
+          <label>
+            <span>Notes</span>
+            <textarea v-model="editDetails" rows="4"></textarea>
+          </label>
+
+          <div class="task-form__grid">
+            <label>
+              <span>Category</span>
+              <select v-model="editCategory">
+                <option v-for="category in categoryOptions" :key="category" :value="category">
+                  {{ category }}
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <span>Priority</span>
+              <select v-model="editPriority">
+                <option v-for="priority in priorityOptions" :key="priority" :value="priority">
+                  {{ priority }}
+                </option>
+              </select>
+            </label>
+
+            <label>
+              <span>Due date</span>
+              <input v-model="editDue" type="date" />
+            </label>
+          </div>
+
+          <div class="modal-actions">
+            <button class="ghost-button" type="button" @click="closeEditModal">Cancel</button>
+            <button class="submit-button" type="submit">Save changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div v-if="taskToDelete !== null" class="modal-overlay" @click="cancelDelete">
+      <div class="modal modal--small" @click.stop>
+        <div class="modal-header">
+          <h2>Delete Task?</h2>
+        </div>
+
+        <div class="modal-content">
+          <p>Are you sure you want to delete this task? This action cannot be undone.</p>
+        </div>
+
+        <div class="modal-actions">
+          <button class="ghost-button" type="button" @click="cancelDelete">Cancel</button>
+          <button class="submit-button submit-button--danger" type="button" @click="confirmDelete">
+            Delete task
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
