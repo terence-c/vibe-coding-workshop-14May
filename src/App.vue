@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import {
   getTasks,
   createTask,
@@ -146,6 +146,14 @@ function clearCompleted() {
   clearCompletedInDb()
   refresh()
 }
+
+onMounted(() => {
+  const d = document
+  const s = d.createElement('script')
+  s.src = 'https://test-zy3jl34rlf.disqus.com/embed.js'
+  s.setAttribute('data-timestamp', String(+new Date()))
+  ;(d.head || d.body).appendChild(s)
+})
 
 function dueText(due: string) {
   if (!due) {
@@ -405,5 +413,10 @@ function cardTone(category: Category) {
         <a href="#">Privacy</a>
       </div>
     </footer>
+
+    <section class="panel" style="margin-top: 2rem;">
+      <div id="disqus_thread"></div>
+      <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+    </section>
   </div>
 </template>
