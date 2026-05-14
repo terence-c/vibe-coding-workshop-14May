@@ -199,16 +199,16 @@ a {
 .topbar {
   position: sticky;
   top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   padding: 0.9rem 1rem;
   margin-top: 1rem;
-  background: rgba(249, 249, 244, 0.88);
+  background: var(--surface-strong);
   border: 2px solid var(--ink);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
 }
 
 .brand-block,
