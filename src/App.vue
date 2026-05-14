@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
+import {
+  getTasks,
+  createTask,
+  toggleTask as toggleTaskInDb,
+  deleteTask as deleteTaskInDb,
+  clearCompleted as clearCompletedInDb,
+} from './tasks.js'
 
 type Filter = 'all' | 'open' | 'done'
 type Priority = 'High' | 'Medium' | 'Low'
@@ -15,51 +22,6 @@ interface Task {
   done: boolean
   createdAt: number
 }
-
-const STORAGE_KEY = 'dschool-todo-app'
-
-const seedTasks: Task[] = [
-  {
-    id: 1,
-    title: 'Outline the workshop flow',
-    details: 'Map the warm-up, brainstorm, and reflection blocks before the session starts.',
-    category: 'Build',
-    priority: 'High',
-    due: '2026-05-14',
-    done: false,
-    createdAt: Date.now() - 1000 * 60 * 60 * 4,
-  },
-  {
-    id: 2,
-    title: 'Review feedback notes',
-    details: 'Merge the latest participant comments into the next iteration board.',
-    category: 'Study',
-    priority: 'Medium',
-    due: '2026-05-15',
-    done: true,
-    createdAt: Date.now() - 1000 * 60 * 60 * 8,
-  },
-  {
-    id: 3,
-    title: 'Book the meeting room',
-    details: 'Reserve the larger room for the afternoon critique and set up the screen.',
-    category: 'Admin',
-    priority: 'Low',
-    due: '2026-05-16',
-    done: false,
-    createdAt: Date.now() - 1000 * 60 * 60 * 12,
-  },
-  {
-    id: 4,
-    title: 'Draft the team update',
-    details: 'Summarize progress, blockers, and the next milestone in a short note.',
-    category: 'Personal',
-    priority: 'Medium',
-    due: '2026-05-17',
-    done: false,
-    createdAt: Date.now() - 1000 * 60 * 60 * 16,
-  },
-]
 
 const categoryOptions: Category[] = ['Tool', 'Study', 'Build', 'Personal', 'Admin']
 const priorityOptions: Priority[] = ['High', 'Medium', 'Low']
@@ -80,27 +42,7 @@ const longDateFormatter = new Intl.DateTimeFormat('en-SG', {
   day: 'numeric',
 })
 
-function loadTasks(): Task[] {
-  if (typeof window === 'undefined') {
-    return seedTasks
-  }
-
-  const stored = window.localStorage.getItem(STORAGE_KEY)
-
-  if (!stored) {
-    return seedTasks
-  }
-
-  try {
-    const parsed = JSON.parse(stored) as Task[]
-
-    return parsed.length ? parsed : seedTasks
-  } catch {
-    return seedTasks
-  }
-}
-
-const tasks = ref<Task[]>(loadTasks())
+const tasks = ref<Task[]>(getTasks() as Task[])
 const activeFilter = ref<Filter>('all')
 const searchTerm = ref('')
 const newTitle = ref('')
@@ -108,10 +50,6 @@ const newDetails = ref('')
 const newCategory = ref<Category>('Tool')
 const newPriority = ref<Priority>('High')
 const newDue = ref(todayInput)
-
-const nextId = computed(() => {
-  return tasks.value.reduce((highest, task) => Math.max(highest, task.id), 0) + 1
-})
 
 const visibleTasks = computed(() => {
   const query = searchTerm.value.trim().toLowerCase()
@@ -167,6 +105,10 @@ const spotlightTask = computed(() => {
 
 const currentDateLabel = longDateFormatter.format(new Date())
 
+function refresh() {
+  tasks.value = getTasks() as Task[]
+}
+
 function addTask() {
   const title = newTitle.value.trim()
 
@@ -174,16 +116,14 @@ function addTask() {
     return
   }
 
-  tasks.value.unshift({
-    id: nextId.value,
+  createTask({
     title,
     details: newDetails.value.trim() || 'No extra notes added yet.',
     category: newCategory.value,
     priority: newPriority.value,
     due: newDue.value || todayInput,
-    done: false,
-    createdAt: Date.now(),
   })
+  refresh()
 
   newTitle.value = ''
   newDetails.value = ''
@@ -193,17 +133,18 @@ function addTask() {
 }
 
 function toggleTask(taskId: number) {
-  tasks.value = tasks.value.map((task) =>
-    task.id === taskId ? { ...task, done: !task.done } : task,
-  )
+  toggleTaskInDb(taskId)
+  refresh()
 }
 
 function removeTask(taskId: number) {
-  tasks.value = tasks.value.filter((task) => task.id !== taskId)
+  deleteTaskInDb(taskId)
+  refresh()
 }
 
 function clearCompleted() {
-  tasks.value = tasks.value.filter((task) => !task.done)
+  clearCompletedInDb()
+  refresh()
 }
 
 function dueText(due: string) {
@@ -224,17 +165,6 @@ function cardTone(category: Category) {
   return `card--${category.toLowerCase()}`
 }
 
-watch(
-  tasks,
-  (value) => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
-  },
-  { deep: true },
-)
 </script>
 
 <template>
