@@ -475,8 +475,17 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+function loadDisqus() {
+  const d = document
+  const s = d.createElement('script')
+  s.src = 'https://test-zy3jl34rlf.disqus.com/embed.js'
+  s.setAttribute('data-timestamp', String(+new Date()))
+  ;(d.head || d.body).appendChild(s)
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  loadDisqus()
 })
 
 onUnmounted(() => {
@@ -856,6 +865,21 @@ watch(anyModalOpen, (open) => {
             </button>
           </div>
         </div>
+      </section>
+
+      <!-- Comments -->
+      <section class="comments-panel panel" aria-label="Comments">
+        <div class="panel-heading">
+          <div>
+            <p class="panel-kicker">Discuss</p>
+            <h2>Comments</h2>
+          </div>
+        </div>
+        <div id="disqus_thread"></div>
+        <noscript>
+          Please enable JavaScript to view the
+          <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a>
+        </noscript>
       </section>
     </main>
 

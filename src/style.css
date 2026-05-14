@@ -1041,6 +1041,16 @@ a {
   flex-wrap: wrap;
 }
 
+/* ----------------- COMMENTS ----------------- */
+.comments-panel {
+  padding: 1.2rem 1.4rem 1.6rem;
+}
+
+.comments-panel #disqus_thread {
+  margin-top: 0.5rem;
+  min-height: 4rem;
+}
+
 /* ----------------- FOOTER ----------------- */
 .site-footer {
   display: flex;
