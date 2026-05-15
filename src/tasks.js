@@ -9,6 +9,7 @@ const seedTasks = [
     priority: 'High',
     due: '2026-05-14',
     done: false,
+    pinned: false,
     createdAt: Date.now() - 1000 * 60 * 60 * 4,
   },
   {
@@ -19,6 +20,7 @@ const seedTasks = [
     priority: 'Medium',
     due: '2026-05-15',
     done: true,
+    pinned: false,
     createdAt: Date.now() - 1000 * 60 * 60 * 8,
   },
   {
@@ -29,6 +31,7 @@ const seedTasks = [
     priority: 'Low',
     due: '2026-05-16',
     done: false,
+    pinned: false,
     createdAt: Date.now() - 1000 * 60 * 60 * 12,
   },
   {
@@ -39,26 +42,34 @@ const seedTasks = [
     priority: 'Medium',
     due: '2026-05-17',
     done: false,
+    pinned: false,
     createdAt: Date.now() - 1000 * 60 * 60 * 16,
   },
 ]
 
+function migrate(task) {
+  return { pinned: false, ...task }
+}
+
 function read() {
   if (typeof window === 'undefined') {
-    return [...seedTasks]
+    return seedTasks.map(migrate)
   }
 
   const stored = window.localStorage.getItem(STORAGE_KEY)
 
   if (!stored) {
-    return [...seedTasks]
+    return seedTasks.map(migrate)
   }
 
   try {
     const parsed = JSON.parse(stored)
-    return Array.isArray(parsed) && parsed.length ? parsed : [...seedTasks]
+    if (Array.isArray(parsed) && parsed.length) {
+      return parsed.map(migrate)
+    }
+    return seedTasks.map(migrate)
   } catch {
-    return [...seedTasks]
+    return seedTasks.map(migrate)
   }
 }
 
@@ -92,6 +103,7 @@ export function createTask(input) {
     priority: input.priority ?? 'Medium',
     due: input.due ?? new Date().toLocaleDateString('en-CA'),
     done: false,
+    pinned: false,
     createdAt: Date.now(),
   }
   const next = [task, ...tasks]
@@ -121,6 +133,14 @@ export function toggleTask(id) {
   return updateTask(id, { done: !task.done })
 }
 
+export function togglePinned(id) {
+  const task = getTask(id)
+  if (!task) {
+    return null
+  }
+  return updateTask(id, { pinned: !task.pinned })
+}
+
 export function deleteTask(id) {
   const tasks = read()
   const next = tasks.filter((task) => task.id !== id)
@@ -144,6 +164,25 @@ export function replaceAll(tasks) {
 }
 
 export function resetTasks() {
-  write([...seedTasks])
+  write(seedTasks.map(migrate))
   return read()
+}
+
+export function reorderTasks(orderedIds) {
+  const tasks = read()
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const reordered = []
+  for (const id of orderedIds) {
+    const task = byId.get(id)
+    if (task) {
+      reordered.push(task)
+      byId.delete(id)
+    }
+  }
+  // Append any tasks not mentioned in the ordering (defensive).
+  for (const task of byId.values()) {
+    reordered.push(task)
+  }
+  write(reordered)
+  return reordered
 }

@@ -8,7 +8,7 @@
 
 **Studio Todo** is a single-page **Vue 3 + Vite** todo application styled after a "d.school-inspired" editorial layout (cream/teal/yellow palette, hard drop shadows, Epilogue + Work Sans + JetBrains Mono fonts). It runs entirely in the browser — there is **no backend, no API, no auth, no router, no global state library, and no test suite**. Tasks are persisted to `window.localStorage` under the key `dschool-todo-app`. The site is built with Vite and deployed to **Cloudflare** (Pages/Workers static-asset hosting) via Wrangler.
 
-The entire UI is implemented in a single ~1080-line `<script setup lang="ts">` SFC ([src/App.vue](../App.vue)). All persistence helpers live in a separate plain-JS module ([src/tasks.js](../tasks.js)). Styling is hand-rolled CSS (~1500 lines) in [src/style.css](../style.css).
+The entire UI is implemented in a single ~1477-line `<script setup lang="ts">` SFC ([src/App.vue](../App.vue)). All persistence helpers live in a separate plain-JS module ([src/tasks.js](../tasks.js)). Styling is hand-rolled CSS (~2079 lines) in [src/style.css](../style.css).
 
 ---
 
@@ -89,15 +89,17 @@ tryout-before-lunch/
 ├── dist/                          # Build output — generated, do not edit
 ├── node_modules/                  # Installed deps — generated
 ├── public/
-│   └── favicon.svg                # Site favicon — browsers auto-request /favicon.svg; not referenced from index.html
+│   ├── favicon.svg                # Site favicon — explicitly linked from index.html
+│   └── icons.svg                  # Vite-template icon sprite; dead unless HelloWorld.vue is restored
 ├── src/
+│   ├── assets/                    # Vite-template assets; currently only used by dead HelloWorld.vue
+│   ├── components/
+│   │   └── HelloWorld.vue         # Vite-template leftover; not imported by the app
 │   ├── context/                   # ← You are here. Context docs for future Claude sessions.
 │   ├── CustomCursor.vue           # Pointer overlay: red laser trail (canvas) + red ring (DOM) on hover-clickables (Pass 05, merging Pass 03 + Pass 04 minus the dot)
-│   │   ├── codebase-overview.md   # ← This file.
-│   │   └── changes-NN.md          # One per "pass" / editing session, monotonically numbered.
-│   ├── App.vue                    # The entire UI + state (~1082 lines, TypeScript)
+│   ├── App.vue                    # The entire UI + state (~1477 lines, TypeScript)
 │   ├── main.ts                    # 5-line Vue bootstrap
-│   ├── style.css                  # Global stylesheet (~1509 lines, hand-rolled CSS)
+│   ├── style.css                  # Global stylesheet (~2079 lines, hand-rolled CSS)
 │   └── tasks.js                   # localStorage CRUD + seed data (plain JS, no types)
 ├── .gitignore
 ├── README.md                      # Tiny user-facing readme (Features + npm commands)
@@ -118,7 +120,7 @@ tryout-before-lunch/
 ## 7. Entry point & boot sequence
 
 1. Browser loads [index.html](../../index.html).
-2. `<head>` preconnects to Google Fonts and pulls in Epilogue / Work Sans / JetBrains Mono / Material Symbols stylesheets.
+2. `<head>` links `/favicon.svg`, preconnects to Google Fonts, and pulls in Epilogue / Work Sans / JetBrains Mono / Material Symbols stylesheets.
 3. `<body>` contains a single `<div id="app"></div>` and `<script type="module" src="/src/main.ts"></script>`.
 4. [src/main.ts](../main.ts) imports `./style.css` (side effect), imports `App` from `./App.vue`, calls `createApp(App).mount('#app')`. That's it — 5 lines.
 5. `App.vue`'s `onMounted` registers a global `keydown` listener and injects the Disqus `embed.js` script tag.
@@ -132,7 +134,8 @@ Plain JavaScript module (not TypeScript). All functions read/write `window.local
 **Seed tasks** (4 items) ship inside the module. They are returned by `read()` whenever localStorage is empty or unparseable, and `resetTasks()` rewrites localStorage with a fresh copy. The seeds reference dates `2026-05-14` through `2026-05-17` and categories `Build`, `Study`, `Admin`, `Personal`.
 
 **Internal helpers (not exported)**
-- `read()` → `Task[]` — returns parsed localStorage contents, or a copy of seeds if missing/invalid. Falls back to seeds in non-browser contexts (`typeof window === 'undefined'`).
+- `migrate(task)` → `Task` — currently ensures legacy tasks get `pinned: false`.
+- `read()` → `Task[]` — returns parsed localStorage contents after migration, or a copy of seeds if missing/invalid. Falls back to seeds in non-browser contexts (`typeof window === 'undefined'`).
 - `write(tasks)` — JSON-stringify and persist. No-op outside a browser.
 - `nextId(tasks)` → number — `max(id) + 1`, starting at 1 if the list is empty.
 
@@ -142,13 +145,15 @@ Plain JavaScript module (not TypeScript). All functions read/write `window.local
 |---|---|---|---|
 | `getTasks()` | `() → Task[]` | All tasks | Fresh read on every call |
 | `getTask(id)` | `(id) → Task \| null` | Single task by id | |
-| `createTask(input)` | `({title, details?, category?, priority?, due?}) → Task` | The new task | Prepends to list. Defaults: `details = 'No extra notes added yet.'`, `category = 'Tool'`, `priority = 'Medium'`, `due = today (en-CA YYYY-MM-DD)`, `done = false`, `createdAt = Date.now()` |
+| `createTask(input)` | `({title, details?, category?, priority?, due?}) → Task` | The new task | Prepends to list. Defaults: `details = 'No extra notes added yet.'`, `category = 'Tool'`, `priority = 'Medium'`, `due = today (en-CA YYYY-MM-DD)`, `done = false`, `pinned = false`, `createdAt = Date.now()` |
 | `updateTask(id, patch)` | `(id, partial) → Task \| null` | Updated task or null | Preserves `id`; spreads patch over existing task |
 | `toggleTask(id)` | `(id) → Task \| null` | Updated task | Flips `done` via `updateTask` |
+| `togglePinned(id)` | `(id) → Task \| null` | Updated task | Flips `pinned` via `updateTask` |
 | `deleteTask(id)` | `(id) → boolean` | `true` if removed | |
 | `clearCompleted()` | `() → number` | Count removed | Filters out all `done: true` |
 | `replaceAll(tasks)` | `(Task[]) → Task[]` | Stored tasks | Used by "Start fresh" (passes `[]`) |
 | `resetTasks()` | `() → Task[]` | Stored tasks | Restores the 4 seed tasks |
+| `reorderTasks(orderedIds)` | `(number[]) → Task[]` | Stored tasks | Persists a manual task order from an ordered id list, appending omitted ids defensively |
 
 **Data contract / Task shape** (defined by the seed objects and the TS interface in App.vue):
 
@@ -161,6 +166,7 @@ interface Task {
   priority: 'High' | 'Medium' | 'Low'
   due: string            // ISO date 'YYYY-MM-DD' (en-CA locale)
   done: boolean
+  pinned: boolean        // pinned open tasks float above unpinned tasks
   createdAt: number      // Date.now() ms epoch
 }
 ```
@@ -171,25 +177,27 @@ interface Task {
 
 ## 9. The UI + state layer — `src/App.vue`
 
-Single SFC, `<script setup lang="ts">`. ~1082 lines. Structure:
+Single SFC, `<script setup lang="ts">`. ~1477 lines. Structure:
 
 ### 9.1 Imports
-From Vue: `computed`, `ref`, `onMounted`, `onUnmounted`, `nextTick`, `watch`. From `./tasks.js`: all eight CRUD exports (aliased with `…InDb` suffixes for clarity).
+From Vue: `computed`, `ref`, `onMounted`, `onUnmounted`, `nextTick`, `watch`. From `./tasks.js`: CRUD exports plus pin/reorder helpers (aliased with `…InDb` suffixes for clarity).
 
 ### 9.2 Local TypeScript types
 - `Filter = 'all' | 'open' | 'done'`
 - `Priority = 'High' | 'Medium' | 'Low'`
 - `Category = 'Tool' | 'Study' | 'Build' | 'Personal' | 'Admin'`
-- `SortKey = 'smart' | 'due' | 'priority' | 'created' | 'title'`
+- `SortKey = 'smart' | 'manual' | 'due' | 'priority' | 'created' | 'title'`
 - `interface Task { ... }` (see §8)
-- `interface Toast { id: number; message: string; tone: 'success' | 'info' | 'danger' }`
+- `interface Toast { id; message; tone; action?; duration? }` — action toasts power undo.
+- `interface BurstParticle` / `interface CelebrationBurst` — small particle burst when completing a task.
 
 ### 9.3 Module-level constants
 - `categoryOptions`, `priorityOptions`, `filterOptions`, `sortOptions` — option arrays driving chips/segmented controls/dropdowns.
 - `categoryIcons: Record<Category, string>` — Material Symbols glyph names: `Tool→build`, `Study→menu_book`, `Build→construction`, `Personal→self_care`, `Admin→inventory_2`.
 - `priorityWeight: Record<Priority, number>` — `{High:0, Medium:1, Low:2}`, used by sorters.
 - `todayInput` — today as `YYYY-MM-DD` via `toLocaleDateString('en-CA')`.
-- `dateFormatter`, `longDateFormatter` — `Intl.DateTimeFormat('en-SG', …)`. Locale is **en-SG** (Singapore), short and long forms.
+- `dateFormatter`, `longDateFormatter`, `heroDateFormatter` — `Intl.DateTimeFormat('en-SG', …)`. Locale is **en-SG** (Singapore), short, topbar, and hero-date forms.
+- `prefersReducedMotion` — disables completion bursts for users who request reduced motion.
 
 ### 9.4 Reactive state
 - `tasks` — `ref<Task[]>`, initialised from `getTasks()`.
@@ -197,9 +205,13 @@ From Vue: `computed`, `ref`, `onMounted`, `onUnmounted`, `nextTick`, `watch`. Fr
 - `searchInputRef` — template ref for the search `<input>`.
 - **Composer modal:** `composerOpen`, `newTitle`, `newDetails`, `newCategory` (default `'Personal'`), `newPriority` (`'Medium'`), `newDue` (today), `composerFirstFieldRef`.
 - **Edit modal:** `editingTask`, `editTitle`, `editDetails`, `editCategory`, `editPriority`, `editDue`, `editFirstFieldRef`.
-- **Delete confirmation:** `taskToDelete: number | null`.
 - **Help modal:** `helpOpen`.
-- **Toasts:** `toasts: Toast[]`, `toastIdCounter`, `pushToast(message, tone='success')` — auto-dismiss after **2800 ms**.
+- **Toasts:** `toasts: Toast[]`, `toastIdCounter`, `toastTimers`, `pushToast(message, tone='success', options?)`, `dismissToast(id)` — auto-dismiss after **2800 ms**, or **5000 ms** when an undo action is present.
+- **Drag-to-reorder:** `draggedTaskId`, `dragOverTaskId`; active only when Sort is Manual.
+- **Swipe gestures:** `swipingTaskId`, `swipeOffset`, `swipeAction`, plus start coordinates and thresholds. Touch-only; right completes, left deletes with undo.
+- **Completion celebration:** `celebrations`, `celebrationIdCounter`, `burstColors`.
+- **Inline title editing:** `inlineEditingId`, `inlineEditingValue`, `inlineEditingRef`, plus a click suppression guard after swipes.
+- **Filters disclosure:** `filtersOpen` toggles the collapsed category/priority chip rows.
 - **Focus restore:** `previouslyFocused: HTMLElement | null` — captured before opening any modal so focus can be returned on close.
 
 ### 9.5 Date helpers
@@ -209,13 +221,15 @@ From Vue: `computed`, `ref`, `onMounted`, `onUnmounted`, `nextTick`, `watch`. Fr
 - `dueTone(task)` — returns CSS class `tone-overdue | tone-today | tone-soon | ''` based on `daysUntil`. Empty for `done` tasks.
 
 ### 9.6 Computed
-- `visibleTasks` — applies status filter, category filter, priority filter, and case-insensitive search across `title + details + category + priority`. Then sorts using a `Record<SortKey, comparator>` map. **All sorters push `done` tasks to the bottom** by leading with `Number(a.done) - Number(b.done)`.
+- `visibleTasks` — applies status filter, category filter, priority filter, and case-insensitive search across `title + details + category + priority`. Then sorts using the selected sorter. **Pinned open tasks float above unpinned open tasks and done tasks sink**; manual sort preserves stored order inside those groups.
 - Counts: `totalCount`, `openCount`, `doneCount`, `highPriorityCount` (open + High), `overdueCount` (open + past-due), `todayCount` (open + due today).
 - `completionRate` — `round(doneCount / totalCount * 100)`, returns 0 for an empty board.
 - `filterLabel` — the human label for the current `activeFilter`.
-- `spotlightTask` — first open overdue task, else first open High-priority, else first open task, else null. Drives the "Next up" panel.
+- `spotlightTask` — first open pinned task, else first open overdue task, else first open High-priority, else first open task, else null. Drives the "Next up" panel.
 - `currentDateLabel` — formatted today, for the topbar caption.
-- `anyModalOpen` — boolean OR of `composerOpen`, `editingTask`, `taskToDelete`, `helpOpen`. Used to suppress shortcut handling and to lock body scroll.
+- `heroDateLabel` — formatted today, for the Today hero H1.
+- `anyModalOpen` — boolean OR of `composerOpen`, `editingTask`, `helpOpen`. Used to suppress shortcut handling and to lock body scroll.
+- `activeFilterCount` — count badge for the collapsed Filters disclosure.
 - `hasActiveFilters` — true if anything diverges from defaults.
 
 ### 9.7 Mutation handlers
@@ -224,21 +238,27 @@ Pattern: every mutator calls `refresh()` (which is `tasks.value = getTasks() as 
 - `openComposer()` / `closeComposer()` — manage composer state + focus restore; reset all `new*` fields on close.
 - `addTask()` — validates non-empty trimmed title; calls `createTask(...)`; toasts `"Task added to the board"`.
 - `quickAdd(event)` — handles Enter on the quick-add input. Bypasses the composer entirely with sane defaults (`category='Personal'`, `priority='Medium'`, `due=today`). Toasts `"Quick task added — tap edit to add details"`.
-- `toggleTask(id)` — flips done; toast tone `'info'` with text mirroring the new state.
+- `spawnCelebration(originEl)` — creates a short particle burst from the completed checkbox/button, unless reduced motion is requested.
+- `toggleTask(id, originEl?)` — flips done; when moving from open → done, spawns the completion burst; toast tone `'info'` mirrors the new state.
+- `togglePinned(id)` — flips `pinned`; pinned open tasks float to the top across all sorts.
 - `openEditModal(task)` / `closeEditModal()` / `saveTaskEdit()` — manage edit modal.
-- `promptDeleteTask(id)` / `confirmDelete()` / `cancelDelete()` — two-step destructive flow with a confirmation modal.
+- `deleteTaskWithUndo(id)` — deletes immediately, then shows a 5-second undo toast backed by a snapshot of the task array.
+- `truncate(value, max)` — keeps destructive toast copy compact.
 - `focusSearch()` — focuses + selects the search input.
-- `clearCompleted()` — wraps `clearCompletedInDb`; toast tells you how many were removed (pluralised).
+- `clearCompleted()` — clears done tasks immediately, then shows a 5-second undo toast backed by a snapshot of the task array.
 - `resetBoard()` — `resetTasksInDb()`; toast `"Board reset to sample tasks"`.
 - `startFresh()` — `replaceAllInDb([])`; toast `"Board cleared — start fresh"`.
-- Filter shortcuts: `setCategoryFilter`, `setPriorityFilter` (toggle on/off), `jumpToOverdue` (open + sort by due + clear search/category/priority), `jumpToHighPriority`, `jumpToOpen`, `jumpToDone`, `jumpToToday`, `clearAllFilters`.
+- Filter shortcuts: `setCategoryFilter`, `setPriorityFilter` (toggle on/off), `jumpToOverdue` (open + sort by due + clear search/category/priority), `jumpToHighPriority`, `jumpToOpen`, `jumpToToday`, `clearAllFilters`.
 - `categoryIcon(category)` / `cardTone(category)` — view helpers; `cardTone` returns `"card--<lowercase-category>"`.
 - `focusFirstTask()` — focuses the first task card's checkbox (used by the `J` shortcut).
+- Drag handlers: `onDragStart`, `onDragOver`, `onDrop`, `onDragEnd` persist manual order through `reorderTasksInDb`.
+- Swipe handlers: `onSwipeStart`, `onSwipeMove`, `onSwipeEnd`, `cancelSwipe` implement touch swipe with guarded click suppression.
+- Inline edit handlers: `startInlineEdit`, `saveInlineEdit`, `cancelInlineEdit`.
 
 ### 9.8 Global keyboard handler — `handleKeydown(event)`
 Behaves differently based on whether focus is in an input/textarea/select and whether any modal is open.
 
-**Escape priority (any focus):** help → delete confirmation → edit → composer → clear search if focused.
+**Escape priority (any focus):** help → edit → composer → inline edit → clear search if focused.
 
 **When NOT typing and NO modal is open:**
 - `/` — focus the search field.
@@ -256,39 +276,38 @@ Behaves differently based on whether focus is in an input/textarea/select and wh
 Wrapper: `.app-shell` containing a `.grid-overlay` decorative div and a `.skip-link` for keyboard users.
 
 1. **`<nav class="topbar">`** — brand block (the `d.` mark + "Studio Todo" + today's long date), plus right-side actions: Shortcuts button, search-focus icon button, "New task" CTA.
-2. **`<header class="masthead">`** — `Your tasks` eyebrow + the current filter label as `<h1>`.
-3. **`<main class="main-board">`** containing:
-   - **`.stat-row`** — clickable filter chips: Total / Open / Done / Today / High / Overdue, plus a non-clickable progress card showing `completionRate %` with a `.progress-bar` fill. Some buttons are `disabled` when their count is 0.
-   - **`.spotlight.panel`** (v-if `spotlightTask`) — "Next up" hero with edit + mark-done actions.
-   - **`.toolbar.panel`** — quick-add input, search field, segmented filter control, sort dropdown, and chip rows for Category & Priority. Includes a "Clear filters" chip (only if `hasActiveFilters`) and a "Clear done" chip (disabled if `doneCount === 0`).
-   - **`#tasks-region.tasks-panel.panel`** — heading shows `N task(s)` + a `Filtered` badge if filters are active. Body is a `<transition-group name="card">` rendering each task as an `<article class="task-card">`. Each card has a checkbox, category label + priority pill, title, details, edit/delete icon buttons, and a footer with a due-date pill (showing `Overdue` badge when applicable). Empty state has three variants (filtered / never had tasks / no matches in current view) with appropriate CTAs.
+2. **`<main class="main-board">`** containing:
+   - **`.today-hero.panel`** — date-led hero with current filter/count eyebrow, "Next up" spotlight, inline actions, and compact stats: Total / Open / Today / High / Overdue / Done rate.
+   - **`.toolbar.panel`** — quick-add input, search field, segmented filter control, sort dropdown, and a collapsed Filters disclosure for Category & Priority. Includes "Clear filters" and "Clear done" chips.
+   - **`#tasks-region.tasks-panel.panel`** — heading shows `N task(s)` + a `Filtered` badge if filters are active. Body is a `<transition-group name="card">` rendering each task as a `.task-card-wrap` with swipe action reveals and an `<article class="task-card">`. Each card has optional manual drag handle, checkbox, pinned indicator, category label + priority pill, inline-editable title, details, pin/edit/delete icon buttons, and a footer with a due-date pill (showing `Overdue` badge when applicable). Empty state has three variants (filtered / never had tasks / no matches in current view) with appropriate CTAs.
    - **`.comments-panel.panel`** — Disqus container `<div id="disqus_thread">` + a `<noscript>` fallback.
-4. **`<footer class="site-footer">`** — brand block + "Reset to samples" and "Start fresh" actions.
-5. **Floating action button** `.fab` — visible only on mobile (controlled via CSS), opens the composer.
-6. **Four modals** (top-level siblings, conditionally rendered): Composer, Edit, Delete confirmation, Keyboard shortcuts. Every modal uses an `.modal-overlay` (closes on click) wrapping a `.modal` (with `@click.stop`), `role="dialog"`, `aria-modal="true"`, and a labelling `aria-labelledby`. Forms use `@submit.prevent` to call the appropriate handler.
-7. **Toast stack** — `.toast-stack` with `aria-live="polite"`, `aria-atomic="true"`, rendering toasts inside a `<transition-group name="toast">`. Toast icon swaps by tone: `danger→delete`, `info→info`, `success→check_circle`.
+3. **`<footer class="site-footer">`** — brand block + "Reset to samples" and "Start fresh" actions.
+4. **Floating action button** `.fab` — visible only on mobile (controlled via CSS), opens the composer.
+5. **Three modals** (top-level siblings, conditionally rendered): Composer, Edit, Keyboard shortcuts. Every modal uses an `.modal-overlay` (closes on click) wrapping a `.modal` (with `@click.stop`), `role="dialog"`, `aria-modal="true"`, and a labelling `aria-labelledby`. Forms use `@submit.prevent` to call the appropriate handler.
+6. **Toast stack** — `.toast-stack` with `aria-live="polite"`, `aria-atomic="true"`, rendering toasts inside a `<transition-group name="toast">`. Toast icon swaps by tone and optional action toasts include an Undo button plus a draining progress bar.
+7. **Completion celebration layer** — `.celebration-layer` renders short-lived particles for task completion.
 
 ---
 
 ## 10. Styling — `src/style.css`
 
-Hand-rolled CSS, no framework. ~1509 lines. Conventions:
+Hand-rolled CSS, no framework. ~2079 lines. Conventions:
 
 ### 10.1 CSS variables (`:root`)
 Palette: `--bg #fff8df`, `--surface`, `--surface-strong #f9f9f4`, `--ink #191d11`, `--ink-soft`, `--ink-muted`, `--teal #82d3de`, `--yellow #ffc857`, `--pink #ffdad5`, `--green #b6d96f`, `--line`, `--line-strong`, `--shadow 4px 4px 0 rgba(25,29,17,1)`, `--shadow-soft`, `--danger #e5392d`, `--danger-dark #c41a0f`, `--warn #ffb020`.
 Typography: `--font-display 'Epilogue'`, `--font-body 'Work Sans'`, `--font-mono 'JetBrains Mono'`.
 
 ### 10.2 Class naming (BEM-ish)
-- Block elements: `.task-card`, `.stat-card`, `.chip`, `.panel`, `.modal`, `.toast`, `.spotlight`, `.toolbar`, `.fab`, etc.
-- Modifiers via `--`: `.chip--category`, `.chip--prio-high`, `.task-card--build`, `.stat-card--clickable`, `.stat-card--accent`, `.submit-button--danger`, `.modal--small`, etc.
-- State classes: `.is-active`, `.is-pressed`, `.is-done`, `.is-overdue`.
+- Block elements: `.today-hero`, `.hero-stat`, `.task-card`, `.task-card-wrap`, `.chip`, `.panel`, `.modal`, `.toast`, `.toolbar`, `.fab`, `.celebration-layer`, etc.
+- Modifiers via `--`: `.chip--category`, `.chip--prio-high`, `.hero-stat--danger`, `.submit-button--danger`, `.icon-button--pinned`, `.modal--small`, etc.
+- State classes: `.is-active`, `.is-pressed`, `.is-done`, `.is-overdue`, `.is-pinned`, `.is-draggable`, `.is-swiping`, `.swipe-complete`, `.swipe-delete`.
 - Tone helpers used by date pills: `.tone-overdue`, `.tone-today`, `.tone-soon`.
 
 ### 10.3 Background
 `body` has a layered background: two radial gradients (teal top-left, yellow right) over a vertical cream gradient.
 
 ### 10.4 Accessibility utilities
-`.visually-hidden`, `.skip-link`. ARIA roles/attributes are wired in the template (`role="dialog"`, `aria-modal`, `aria-live`, `aria-selected` on tabs, labelled buttons throughout).
+`.visually-hidden`, `.skip-link`, global `:focus-visible` outlines. ARIA roles/attributes are wired in the template (`role="dialog"`, `aria-modal`, `aria-live`, `aria-selected` on tabs, labelled buttons throughout). `prefers-reduced-motion: reduce` disables/shortens decorative motion, and the JS completion burst also short-circuits on reduced motion.
 
 ---
 
@@ -337,8 +356,12 @@ Standard ignores for `node_modules/`, `dist/`, `.wrangler/`, etc.
 | `/` | Focus search |
 | `J` | Jump to first task |
 | `?` | Show shortcuts help |
-| `Esc` | Close any open modal; in search, clears the query and blurs |
-| `Enter` | In the quick-add bar, create the task |
+| `Esc` | Close modal; clear search; cancel inline edit |
+| `Enter` | Quick add: create task; Inline edit: save |
+| Click title | Inline rename an open task |
+| Drag handle | Reorder while Sort is Manual |
+| Swipe → | Complete a task on touch devices |
+| Swipe ← | Delete a task with undo on touch devices |
 
 Shortcuts are suppressed while focus is inside an `<input>`, `<textarea>`, or `<select>`, or while any modal is open (the Escape handler still runs).
 
@@ -348,6 +371,7 @@ Shortcuts are suppressed while focus is inside an `<input>`, `<textarea>`, or `<
 
 Most recent commits at the time this doc was written:
 ```
+7820c31 Added cursor motion
 249973b Restore Disqus comments section
 956f871 Implement comprehensive UI/UX improvements
 d8c6704 Add critical UI/UX improvements to todo app
@@ -379,13 +403,14 @@ These are not opinions — they are verifiable facts. Future Claude should know 
 7. **Quick-add and full composer have different defaults.** Quick-add defaults to `category='Personal'`, full composer's initial state is also `'Personal'`; but `createTask`'s own fallback is `category='Tool'` if nothing is passed. The composer always passes a value, so the `'Tool'` default in `tasks.js` is essentially unreachable from the current UI — it would only matter if `createTask` were called from elsewhere.
 8. **Body-scroll lock is global.** `document.body.style.overflow` is written directly. If you add another component that also locks scroll, coordinate or it will fight.
 9. **Permissions file pre-allows `git reset *` and `git stash *`** — this is for convenience in this project, but be aware destructive git operations may not prompt.
-10. **No `<link rel="icon">` in `index.html`.** `public/favicon.svg` exists and browsers will auto-request it, but if you ever want explicit control (e.g. `apple-touch-icon`, sizes, `manifest.json`), there's no scaffolding for it yet.
+10. **This branch still contains Vite-template dead files.** `src/components/HelloWorld.vue`, `src/assets/{hero.png,vite.svg,vue.svg}`, and `public/icons.svg` exist on `v1-improvements` but are not imported by the app. Pass 02 removed them on `code-cleanup`, but that branch's cleanup is not present here.
 
 > **History:**
 > - Pass 02 removed previously-dead files (`src/components/HelloWorld.vue`, `src/assets/{hero.png,vite.svg,vue.svg}`, `public/icons.svg`) and their now-empty parent directories. See `changes-02.md`.
 > - Pass 03 added `src/LaserCursor.vue` — a canvas-based laser-trail pointer overlay riding on the `--danger`/`--pink` palette of the masthead "Everything" headline. See `changes-03.md`.
 > - Pass 04 pivoted the cursor effect: deleted `src/LaserCursor.vue`, added `src/CustomCursor.vue` — a click-affordance custom cursor (red dot → red ring when over interactives). Same `--danger` palette. See `changes-04.md`.
 > - Pass 05 merged the two: `CustomCursor.vue` now combines the Pass 03 laser trail with Pass 04's ring (shrunk 42 → 34 px, ~20 % smaller), dropped the persistent dot. Also added `.icon-button--accent:hover` (yellow) in `style.css` and applied it to the per-task Edit button so it mirrors the Delete button's hover treatment. See `changes-05.md`.
+> - Pass 06 on `v1-improvements` implemented the UX overhaul: Today hero, collapsed filters, pinned/manual order, swipe gestures, undo toasts, completion burst, inline title edit, responsive CSS, and explicit favicon link. See `changes-06.md`.
 
 ---
 
@@ -401,9 +426,8 @@ If a feature request implies any of these, it's net-new work — call it out:
 - ❌ No linter (`eslint`) or formatter (`prettier`).
 - ❌ No i18n.
 - ❌ No theming / dark mode — single light palette.
-- ❌ No mobile-specific layout beyond responsive CSS + a mobile FAB.
-- ❌ No drag-and-drop reordering.
-- ❌ No undo/redo.
+- ❌ No calendar view.
+- ❌ No bulk multi-select actions.
 - ❌ No multi-list / project grouping.
 - ❌ No keyboard navigation inside the task grid beyond `J` jumping to the first card.
 - ❌ No service worker / offline shell beyond the SPA fallback in Wrangler.

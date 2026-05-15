@@ -9,13 +9,15 @@ import {
   updateTask as updateTaskInDb,
   resetTasks as resetTasksInDb,
   replaceAll as replaceAllInDb,
+  togglePinned as togglePinnedInDb,
+  reorderTasks as reorderTasksInDb,
 } from './tasks.js'
 import CustomCursor from './CustomCursor.vue'
 
 type Filter = 'all' | 'open' | 'done'
 type Priority = 'High' | 'Medium' | 'Low'
 type Category = 'Tool' | 'Study' | 'Build' | 'Personal' | 'Admin'
-type SortKey = 'smart' | 'due' | 'priority' | 'created' | 'title'
+type SortKey = 'smart' | 'manual' | 'due' | 'priority' | 'created' | 'title'
 
 interface Task {
   id: number
@@ -25,13 +27,36 @@ interface Task {
   priority: Priority
   due: string
   done: boolean
+  pinned: boolean
   createdAt: number
+}
+
+interface ToastAction {
+  label: string
+  handler: () => void
 }
 
 interface Toast {
   id: number
   message: string
   tone: 'success' | 'info' | 'danger'
+  action?: ToastAction
+  duration?: number
+}
+
+interface BurstParticle {
+  id: number
+  dx: number
+  dy: number
+  color: string
+  size: number
+}
+
+interface CelebrationBurst {
+  id: number
+  x: number
+  y: number
+  particles: BurstParticle[]
 }
 
 const categoryOptions: Category[] = ['Tool', 'Study', 'Build', 'Personal', 'Admin']
@@ -43,6 +68,7 @@ const filterOptions: Array<{ label: string; value: Filter }> = [
 ]
 const sortOptions: Array<{ label: string; value: SortKey }> = [
   { label: 'Smart (default)', value: 'smart' },
+  { label: 'Manual (drag to reorder)', value: 'manual' },
   { label: 'Due date', value: 'due' },
   { label: 'Priority', value: 'priority' },
   { label: 'Created', value: 'created' },
@@ -69,6 +95,16 @@ const longDateFormatter = new Intl.DateTimeFormat('en-SG', {
   month: 'short',
   day: 'numeric',
 })
+const heroDateFormatter = new Intl.DateTimeFormat('en-SG', {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+})
+
+const prefersReducedMotion =
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 const tasks = ref<Task[]>(getTasks() as Task[])
 const activeFilter = ref<Filter>('all')
@@ -96,22 +132,61 @@ const editPriority = ref<Priority>('Medium')
 const editDue = ref('')
 const editFirstFieldRef = ref<HTMLInputElement | null>(null)
 
-// Delete confirmation state
-const taskToDelete = ref<number | null>(null)
-
 // Help modal state
 const helpOpen = ref(false)
 
-// Toast notifications
+// Toast notifications (with optional undo action)
 const toasts = ref<Toast[]>([])
 let toastIdCounter = 0
-const pushToast = (message: string, tone: Toast['tone'] = 'success') => {
-  const id = ++toastIdCounter
-  toasts.value.push({ id, message, tone })
-  setTimeout(() => {
-    toasts.value = toasts.value.filter((t) => t.id !== id)
-  }, 2800)
+const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
+const dismissToast = (id: number) => {
+  toasts.value = toasts.value.filter((t) => t.id !== id)
+  const timer = toastTimers.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    toastTimers.delete(id)
+  }
 }
+const pushToast = (
+  message: string,
+  tone: Toast['tone'] = 'success',
+  options: { action?: ToastAction; duration?: number } = {},
+) => {
+  const id = ++toastIdCounter
+  const duration = options.duration ?? (options.action ? 5000 : 2800)
+  toasts.value.push({ id, message, tone, action: options.action, duration })
+  const timer = setTimeout(() => dismissToast(id), duration)
+  toastTimers.set(id, timer)
+  return id
+}
+
+// Drag-to-reorder state
+const draggedTaskId = ref<number | null>(null)
+const dragOverTaskId = ref<number | null>(null)
+
+// Swipe gesture state (mobile / touch only)
+const swipingTaskId = ref<number | null>(null)
+const swipeOffset = ref(0)
+const swipeAction = ref<'complete' | 'delete' | null>(null)
+const suppressInlineClickTaskId = ref<number | null>(null)
+let swipeStartX = 0
+let swipeStartY = 0
+let swipeDidMove = false
+const SWIPE_TRIGGER_THRESHOLD = 96
+const SWIPE_MAX_OFFSET = 148
+
+// Completion celebration bursts
+const celebrations = ref<CelebrationBurst[]>([])
+let celebrationIdCounter = 0
+const burstColors = ['#e5392d', '#ffdad5', '#ffc857', '#82d3de', '#fff8df']
+
+// Inline title editing
+const inlineEditingId = ref<number | null>(null)
+const inlineEditingValue = ref('')
+const inlineEditingRef = ref<HTMLInputElement | null>(null)
+
+// Filters disclosure (collapsed by default)
+const filtersOpen = ref(false)
 
 // Element refs for focus trap
 const previouslyFocused = ref<HTMLElement | null>(null)
@@ -166,16 +241,23 @@ const visibleTasks = computed(() => {
       .includes(query)
   })
 
-  const sorters: Record<SortKey, (a: Task, b: Task) => number> = {
+  // Pinned open tasks always float to the top; done tasks always sink.
+  const pinWeight = (t: Task) => (t.done ? 2 : t.pinned ? 0 : 1)
+
+  if (sortKey.value === 'manual') {
+    return [...filtered].sort((a, b) => pinWeight(a) - pinWeight(b))
+  }
+
+  const sorters: Record<Exclude<SortKey, 'manual'>, (a: Task, b: Task) => number> = {
     smart: (a, b) =>
-      Number(a.done) - Number(b.done) ||
+      pinWeight(a) - pinWeight(b) ||
       priorityWeight[a.priority] - priorityWeight[b.priority] ||
       b.createdAt - a.createdAt,
-    due: (a, b) => Number(a.done) - Number(b.done) || a.due.localeCompare(b.due),
+    due: (a, b) => pinWeight(a) - pinWeight(b) || a.due.localeCompare(b.due),
     priority: (a, b) =>
-      Number(a.done) - Number(b.done) || priorityWeight[a.priority] - priorityWeight[b.priority],
-    created: (a, b) => Number(a.done) - Number(b.done) || b.createdAt - a.createdAt,
-    title: (a, b) => Number(a.done) - Number(b.done) || a.title.localeCompare(b.title),
+      pinWeight(a) - pinWeight(b) || priorityWeight[a.priority] - priorityWeight[b.priority],
+    created: (a, b) => pinWeight(a) - pinWeight(b) || b.createdAt - a.createdAt,
+    title: (a, b) => pinWeight(a) - pinWeight(b) || a.title.localeCompare(b.title),
   }
 
   return [...filtered].sort(sorters[sortKey.value])
@@ -204,6 +286,7 @@ const filterLabel = computed(
 
 const spotlightTask = computed(() => {
   return (
+    tasks.value.find((task) => !task.done && task.pinned) ??
     tasks.value.find((task) => !task.done && isOverdue(task.due)) ??
     tasks.value.find((task) => !task.done && task.priority === 'High') ??
     tasks.value.find((task) => !task.done) ??
@@ -212,10 +295,21 @@ const spotlightTask = computed(() => {
 })
 
 const currentDateLabel = longDateFormatter.format(new Date())
+const heroDateLabel = heroDateFormatter.format(new Date())
 
 const anyModalOpen = computed(
-  () => composerOpen.value || editingTask.value !== null || taskToDelete.value !== null || helpOpen.value,
+  () => composerOpen.value || editingTask.value !== null || helpOpen.value,
 )
+
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (activeFilter.value !== 'all') count++
+  if (categoryFilter.value !== 'all') count++
+  if (priorityFilter.value !== 'all') count++
+  if (searchTerm.value.length > 0) count++
+  if (sortKey.value !== 'smart') count++
+  return count
+})
 
 function refresh() {
   tasks.value = getTasks() as Task[]
@@ -271,11 +365,45 @@ function quickAdd(event: KeyboardEvent) {
   pushToast('Quick task added — tap edit to add details')
 }
 
-function toggleTask(taskId: number) {
+function spawnCelebration(originEl: Element | null) {
+  if (prefersReducedMotion) return
+  const rect = (originEl as HTMLElement | null)?.getBoundingClientRect()
+  const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+  const y = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+  const id = ++celebrationIdCounter
+  const particles: BurstParticle[] = Array.from({ length: 10 }, (_, i) => {
+    const angle = (Math.PI * 2 * i) / 10 + (Math.random() - 0.5) * 0.4
+    const distance = 36 + Math.random() * 28
+    return {
+      id: i,
+      dx: Math.cos(angle) * distance,
+      dy: Math.sin(angle) * distance,
+      color: burstColors[i % burstColors.length],
+      size: 5 + Math.random() * 4,
+    }
+  })
+  celebrations.value.push({ id, x, y, particles })
+  setTimeout(() => {
+    celebrations.value = celebrations.value.filter((c) => c.id !== id)
+  }, 700)
+}
+
+function toggleTask(taskId: number, originEl?: Element | null) {
   const task = tasks.value.find((t) => t.id === taskId)
   toggleTaskInDb(taskId)
   refresh()
+  const becomingDone = task && !task.done
+  if (becomingDone) {
+    spawnCelebration(originEl ?? null)
+  }
   pushToast(task?.done ? 'Marked as open' : 'Marked as done', 'info')
+}
+
+function togglePinned(taskId: number) {
+  const task = tasks.value.find((t) => t.id === taskId)
+  togglePinnedInDb(taskId)
+  refresh()
+  pushToast(task?.pinned ? 'Unpinned' : 'Pinned to top', 'info')
 }
 
 function openEditModal(task: Task) {
@@ -314,24 +442,26 @@ function saveTaskEdit() {
   closeEditModal()
 }
 
-function promptDeleteTask(taskId: number) {
-  previouslyFocused.value = document.activeElement as HTMLElement
-  taskToDelete.value = taskId
+function deleteTaskWithUndo(taskId: number) {
+  const target = tasks.value.find((t) => t.id === taskId)
+  if (!target) return
+  const snapshot = tasks.value.map((t) => ({ ...t }))
+  deleteTaskInDb(taskId)
+  refresh()
+  pushToast(`Deleted "${truncate(target.title, 40)}"`, 'danger', {
+    action: {
+      label: 'Undo',
+      handler: () => {
+        replaceAllInDb(snapshot)
+        refresh()
+        pushToast('Task restored', 'success')
+      },
+    },
+  })
 }
 
-function confirmDelete() {
-  if (taskToDelete.value !== null) {
-    deleteTaskInDb(taskToDelete.value)
-    refresh()
-    taskToDelete.value = null
-    pushToast('Task deleted', 'danger')
-    previouslyFocused.value?.focus()
-  }
-}
-
-function cancelDelete() {
-  taskToDelete.value = null
-  previouslyFocused.value?.focus()
+function truncate(value: string, max: number) {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value
 }
 
 function focusSearch() {
@@ -341,9 +471,20 @@ function focusSearch() {
 
 function clearCompleted() {
   const removed = doneCount.value
+  if (removed === 0) return
+  const snapshot = tasks.value.map((t) => ({ ...t }))
   clearCompletedInDb()
   refresh()
-  pushToast(`Cleared ${removed} completed task${removed === 1 ? '' : 's'}`, 'info')
+  pushToast(`Cleared ${removed} completed task${removed === 1 ? '' : 's'}`, 'info', {
+    action: {
+      label: 'Undo',
+      handler: () => {
+        replaceAllInDb(snapshot)
+        refresh()
+        pushToast('Restored cleared tasks', 'success')
+      },
+    },
+  })
 }
 
 function resetBoard() {
@@ -381,10 +522,6 @@ function jumpToHighPriority() {
 
 function jumpToOpen() {
   activeFilter.value = 'open'
-}
-
-function jumpToDone() {
-  activeFilter.value = 'done'
 }
 
 function jumpToToday() {
@@ -429,15 +566,10 @@ function handleKeydown(event: KeyboardEvent) {
   const isInInput =
     target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
 
-  // ESC closes any open modal
+  // ESC closes any open modal or inline edit
   if (event.key === 'Escape') {
     if (helpOpen.value) {
       helpOpen.value = false
-      event.preventDefault()
-      return
-    }
-    if (taskToDelete.value !== null) {
-      cancelDelete()
       event.preventDefault()
       return
     }
@@ -448,6 +580,11 @@ function handleKeydown(event: KeyboardEvent) {
     }
     if (composerOpen.value) {
       closeComposer()
+      event.preventDefault()
+      return
+    }
+    if (inlineEditingId.value !== null) {
+      cancelInlineEdit()
       event.preventDefault()
       return
     }
@@ -476,6 +613,145 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+// ── Drag-to-reorder (desktop) ──────────────────────────────────────────
+function onDragStart(event: DragEvent, taskId: number) {
+  if (sortKey.value !== 'manual') {
+    event.preventDefault()
+    return
+  }
+  draggedTaskId.value = taskId
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(taskId))
+  }
+}
+
+function onDragOver(event: DragEvent, taskId: number) {
+  if (draggedTaskId.value === null || sortKey.value !== 'manual') return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+  dragOverTaskId.value = taskId
+}
+
+function onDrop(event: DragEvent, targetId: number) {
+  event.preventDefault()
+  const sourceId = draggedTaskId.value
+  draggedTaskId.value = null
+  dragOverTaskId.value = null
+  if (sourceId === null || sourceId === targetId) return
+
+  const current = tasks.value.slice()
+  const sourceIdx = current.findIndex((t) => t.id === sourceId)
+  const targetIdx = current.findIndex((t) => t.id === targetId)
+  if (sourceIdx < 0 || targetIdx < 0) return
+  const [moved] = current.splice(sourceIdx, 1)
+  current.splice(targetIdx, 0, moved)
+  reorderTasksInDb(current.map((t) => t.id))
+  refresh()
+}
+
+function onDragEnd() {
+  draggedTaskId.value = null
+  dragOverTaskId.value = null
+}
+
+// ── Mobile swipe gestures ──────────────────────────────────────────────
+function onSwipeStart(event: PointerEvent, taskId: number) {
+  if (event.pointerType !== 'touch') return
+  if (inlineEditingId.value === taskId) return
+  const target = event.target as Element | null
+  if (target?.closest('button, input, textarea, select, a, .task-checkbox, .task-card__drag-handle')) {
+    return
+  }
+  swipingTaskId.value = taskId
+  swipeOffset.value = 0
+  swipeAction.value = null
+  swipeStartX = event.clientX
+  swipeStartY = event.clientY
+  swipeDidMove = false
+  ;(event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId)
+}
+
+function onSwipeMove(event: PointerEvent, taskId: number) {
+  if (swipingTaskId.value !== taskId) return
+  const dx = event.clientX - swipeStartX
+  const dy = event.clientY - swipeStartY
+  if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 12) {
+    // vertical scroll — abandon swipe
+    swipingTaskId.value = null
+    swipeOffset.value = 0
+    swipeAction.value = null
+    return
+  }
+  if (Math.abs(dx) > 8) {
+    swipeDidMove = true
+    event.preventDefault()
+  }
+  swipeOffset.value = Math.max(-SWIPE_MAX_OFFSET, Math.min(SWIPE_MAX_OFFSET, dx))
+  if (dx > SWIPE_TRIGGER_THRESHOLD) swipeAction.value = 'complete'
+  else if (dx < -SWIPE_TRIGGER_THRESHOLD) swipeAction.value = 'delete'
+  else swipeAction.value = null
+}
+
+function onSwipeEnd(taskId: number, originEl?: Element | null) {
+  if (swipingTaskId.value !== taskId) return
+  const action = swipeAction.value
+  swipingTaskId.value = null
+  swipeOffset.value = 0
+  swipeAction.value = null
+  if (swipeDidMove) {
+    suppressInlineClickTaskId.value = taskId
+    setTimeout(() => {
+      if (suppressInlineClickTaskId.value === taskId) suppressInlineClickTaskId.value = null
+    }, 0)
+  }
+  if (action === 'complete') {
+    toggleTask(taskId, originEl)
+  } else if (action === 'delete') {
+    deleteTaskWithUndo(taskId)
+  }
+}
+
+function cancelSwipe(taskId: number) {
+  if (swipingTaskId.value !== taskId) return
+  swipingTaskId.value = null
+  swipeOffset.value = 0
+  swipeAction.value = null
+  swipeDidMove = false
+}
+
+// ── Inline title editing ───────────────────────────────────────────────
+function startInlineEdit(task: Task) {
+  if (suppressInlineClickTaskId.value === task.id) {
+    suppressInlineClickTaskId.value = null
+    return
+  }
+  if (task.done) return
+  inlineEditingId.value = task.id
+  inlineEditingValue.value = task.title
+  nextTick(() => {
+    inlineEditingRef.value?.focus()
+    inlineEditingRef.value?.select()
+  })
+}
+
+function saveInlineEdit() {
+  if (inlineEditingId.value === null) return
+  const trimmed = inlineEditingValue.value.trim()
+  if (trimmed) {
+    updateTaskInDb(inlineEditingId.value, { title: trimmed })
+    refresh()
+    pushToast('Title updated', 'info')
+  }
+  inlineEditingId.value = null
+  inlineEditingValue.value = ''
+}
+
+function cancelInlineEdit() {
+  inlineEditingId.value = null
+  inlineEditingValue.value = ''
+}
+
 function loadDisqus() {
   const d = document
   const s = d.createElement('script')
@@ -491,6 +767,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  toastTimers.forEach((timer) => clearTimeout(timer))
+  toastTimers.clear()
 })
 
 // Prevent body scroll when modal is open
@@ -545,84 +823,19 @@ watch(anyModalOpen, (open) => {
       </div>
     </nav>
 
-    <header class="masthead">
-      <p class="eyebrow">Your tasks</p>
-      <h1>{{ filterLabel }}</h1>
-    </header>
-
     <main class="main-board">
-      <!-- Stat row: clickable filter chips -->
-      <section class="stat-row" aria-label="Task summary">
-        <button
-          class="stat-card stat-card--clickable"
-          :class="{ 'is-pressed': activeFilter === 'all' && !hasActiveFilters }"
-          type="button"
-          @click="clearAllFilters"
-        >
-          <span class="stat-card__label">Total</span>
-          <strong>{{ totalCount }}</strong>
-        </button>
-        <button
-          class="stat-card stat-card--clickable"
-          :class="{ 'is-pressed': activeFilter === 'open' && categoryFilter === 'all' && priorityFilter === 'all' }"
-          type="button"
-          @click="jumpToOpen"
-        >
-          <span class="stat-card__label">Open</span>
-          <strong>{{ openCount }}</strong>
-        </button>
-        <button
-          class="stat-card stat-card--clickable"
-          :class="{ 'is-pressed': activeFilter === 'done' }"
-          type="button"
-          @click="jumpToDone"
-        >
-          <span class="stat-card__label">Done</span>
-          <strong>{{ doneCount }}</strong>
-        </button>
-        <button
-          class="stat-card stat-card--clickable stat-card--accent"
-          type="button"
-          @click="jumpToToday"
-          :disabled="todayCount === 0"
-        >
-          <span class="stat-card__label">Today</span>
-          <strong>{{ todayCount }}</strong>
-        </button>
-        <button
-          class="stat-card stat-card--clickable stat-card--warn"
-          type="button"
-          @click="jumpToHighPriority"
-          :disabled="highPriorityCount === 0"
-        >
-          <span class="stat-card__label">High</span>
-          <strong>{{ highPriorityCount }}</strong>
-        </button>
-        <button
-          class="stat-card stat-card--clickable stat-card--danger"
-          type="button"
-          @click="jumpToOverdue"
-          :disabled="overdueCount === 0"
-        >
-          <span class="stat-card__label">Overdue</span>
-          <strong>{{ overdueCount }}</strong>
-        </button>
-        <div class="stat-card stat-card--progress">
-          <span class="stat-card__label">Done rate</span>
-          <strong>{{ completionRate }}%</strong>
-          <div class="progress-bar" aria-hidden="true">
-            <div class="progress-bar__fill" :style="{ width: `${completionRate}%` }"></div>
-          </div>
-        </div>
-      </section>
+      <!-- Today hero: date masthead + spotlight + inline stat strip -->
+      <section class="today-hero panel" aria-labelledby="today-hero-heading">
+        <header class="today-hero__header">
+          <p class="eyebrow">{{ filterLabel }} · {{ visibleTasks.length }} {{ visibleTasks.length === 1 ? 'task' : 'tasks' }}</p>
+          <h1 id="today-hero-heading">{{ heroDateLabel }}</h1>
+        </header>
 
-      <!-- Spotlight (only if there's a meaningful next-up task) -->
-      <section v-if="spotlightTask" class="spotlight panel">
-        <div class="spotlight__copy">
+        <div v-if="spotlightTask" class="today-hero__spotlight">
           <p class="panel-kicker">Next up</p>
           <h2>{{ spotlightTask.title }}</h2>
-          <p class="spotlight__details">{{ spotlightTask.details }}</p>
-          <p class="spotlight__meta">
+          <p class="today-hero__details">{{ spotlightTask.details }}</p>
+          <p class="today-hero__meta">
             <span class="material-symbols-outlined">{{ categoryIcon(spotlightTask.category) }}</span>
             {{ spotlightTask.category }}
             <span class="dot" aria-hidden="true">•</span>
@@ -630,14 +843,79 @@ watch(anyModalOpen, (open) => {
             <span class="dot" aria-hidden="true">•</span>
             <span :class="dueTone(spotlightTask)">{{ relativeDue(spotlightTask.due) }}</span>
           </p>
+          <div class="today-hero__actions">
+            <button class="ghost-button ghost-button--light" type="button" @click="openEditModal(spotlightTask)">
+              Edit
+            </button>
+            <button class="submit-button submit-button--light" type="button" @click="(e) => toggleTask(spotlightTask!.id, (e.currentTarget as HTMLElement))">
+              {{ spotlightTask.done ? 'Reopen' : 'Mark done' }}
+            </button>
+          </div>
         </div>
-        <div class="spotlight__actions">
-          <button class="ghost-button ghost-button--light" type="button" @click="openEditModal(spotlightTask)">
-            Edit
+        <div v-else-if="totalCount === 0" class="today-hero__spotlight today-hero__spotlight--empty">
+          <p class="panel-kicker">Get started</p>
+          <h2>Your board is empty.</h2>
+          <p class="today-hero__details">Capture the first thing on your mind — quick add below or <kbd>N</kbd> for the full form.</p>
+        </div>
+        <div v-else class="today-hero__spotlight today-hero__spotlight--empty">
+          <p class="panel-kicker">All clear</p>
+          <h2>Every task is done. ✓</h2>
+          <p class="today-hero__details">Nice work. Add a new task or reopen something you finished.</p>
+        </div>
+
+        <div class="today-hero__stats" role="group" aria-label="Quick stats">
+          <button
+            class="hero-stat"
+            type="button"
+            @click="clearAllFilters"
+            :class="{ 'is-pressed': activeFilter === 'all' && !hasActiveFilters }"
+          >
+            <strong>{{ totalCount }}</strong>
+            <span>Total</span>
           </button>
-          <button class="submit-button submit-button--light" type="button" @click="toggleTask(spotlightTask.id)">
-            {{ spotlightTask.done ? 'Reopen' : 'Mark done' }}
+          <button
+            class="hero-stat"
+            type="button"
+            @click="jumpToOpen"
+            :class="{ 'is-pressed': activeFilter === 'open' }"
+          >
+            <strong>{{ openCount }}</strong>
+            <span>Open</span>
           </button>
+          <button
+            class="hero-stat hero-stat--accent"
+            type="button"
+            @click="jumpToToday"
+            :disabled="todayCount === 0"
+          >
+            <strong>{{ todayCount }}</strong>
+            <span>Today</span>
+          </button>
+          <button
+            class="hero-stat hero-stat--warn"
+            type="button"
+            @click="jumpToHighPriority"
+            :disabled="highPriorityCount === 0"
+          >
+            <strong>{{ highPriorityCount }}</strong>
+            <span>High</span>
+          </button>
+          <button
+            class="hero-stat hero-stat--danger"
+            type="button"
+            @click="jumpToOverdue"
+            :disabled="overdueCount === 0"
+          >
+            <strong>{{ overdueCount }}</strong>
+            <span>Overdue</span>
+          </button>
+          <div class="hero-stat hero-stat--progress" aria-label="Completion rate">
+            <strong>{{ completionRate }}%</strong>
+            <span>Done</span>
+            <div class="progress-bar" aria-hidden="true">
+              <div class="progress-bar__fill" :style="{ width: `${completionRate}%` }"></div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -705,7 +983,44 @@ watch(anyModalOpen, (open) => {
           </label>
         </div>
 
-        <div class="toolbar__chips">
+        <div class="toolbar__disclosure">
+          <button
+            class="chip chip--disclosure"
+            type="button"
+            @click="filtersOpen = !filtersOpen"
+            :aria-expanded="filtersOpen"
+            aria-controls="filter-chips"
+          >
+            <span class="material-symbols-outlined">tune</span>
+            Filters
+            <span v-if="activeFilterCount > 0" class="badge badge--inline">{{ activeFilterCount }}</span>
+            <span class="material-symbols-outlined chip-disclosure__caret" aria-hidden="true">
+              {{ filtersOpen ? 'expand_less' : 'expand_more' }}
+            </span>
+          </button>
+
+          <button
+            v-if="hasActiveFilters"
+            class="chip chip--clear"
+            type="button"
+            @click="clearAllFilters"
+          >
+            <span class="material-symbols-outlined">close</span>
+            Clear filters
+          </button>
+
+          <button
+            class="chip chip--clear"
+            type="button"
+            @click="clearCompleted"
+            :disabled="doneCount === 0"
+          >
+            <span class="material-symbols-outlined">cleaning_services</span>
+            Clear done
+          </button>
+        </div>
+
+        <div v-show="filtersOpen" id="filter-chips" class="toolbar__chips">
           <span class="chip-group__label">Category</span>
           <button
             class="chip"
@@ -748,26 +1063,6 @@ watch(anyModalOpen, (open) => {
           >
             {{ priority }}
           </button>
-
-          <button
-            v-if="hasActiveFilters"
-            class="chip chip--clear"
-            type="button"
-            @click="clearAllFilters"
-          >
-            <span class="material-symbols-outlined">close</span>
-            Clear filters
-          </button>
-
-          <button
-            class="chip chip--clear"
-            type="button"
-            @click="clearCompleted"
-            :disabled="doneCount === 0"
-          >
-            <span class="material-symbols-outlined">cleaning_services</span>
-            Clear done
-          </button>
         </div>
       </section>
 
@@ -782,70 +1077,148 @@ watch(anyModalOpen, (open) => {
         </div>
 
         <transition-group v-if="visibleTasks.length" name="card" tag="div" class="task-grid">
-          <article
+          <div
             v-for="task in visibleTasks"
             :key="task.id"
-            class="task-card"
-            :class="[cardTone(task.category), { 'is-done': task.done, 'is-overdue': !task.done && isOverdue(task.due) }]"
+            class="task-card-wrap"
+            :class="{
+              'is-swiping': swipingTaskId === task.id,
+              'swipe-complete': swipingTaskId === task.id && swipeAction === 'complete',
+              'swipe-delete': swipingTaskId === task.id && swipeAction === 'delete',
+              'is-dragging': draggedTaskId === task.id,
+              'is-drag-target': dragOverTaskId === task.id && draggedTaskId !== task.id,
+            }"
           >
-            <div class="task-card__row">
-              <label class="task-checkbox" :title="task.done ? 'Mark as open' : 'Mark as done'">
-                <input
-                  type="checkbox"
-                  :checked="task.done"
-                  @change="toggleTask(task.id)"
-                  :aria-label="task.done ? `Reopen ${task.title}` : `Complete ${task.title}`"
-                />
-                <span class="task-checkbox__box" aria-hidden="true">
-                  <span class="material-symbols-outlined">check</span>
+            <div class="swipe-action swipe-action--complete" aria-hidden="true">
+              <span class="material-symbols-outlined">check_circle</span>
+              <span>Complete</span>
+            </div>
+            <div class="swipe-action swipe-action--delete" aria-hidden="true">
+              <span>Delete</span>
+              <span class="material-symbols-outlined">delete</span>
+            </div>
+            <article
+              class="task-card"
+              :class="[
+                cardTone(task.category),
+                {
+                  'is-done': task.done,
+                  'is-overdue': !task.done && isOverdue(task.due),
+                  'is-pinned': task.pinned && !task.done,
+                  'is-draggable': sortKey === 'manual',
+                },
+              ]"
+              :draggable="sortKey === 'manual' && inlineEditingId !== task.id ? 'true' : 'false'"
+              @dragstart="onDragStart($event, task.id)"
+              @dragover="onDragOver($event, task.id)"
+              @drop="onDrop($event, task.id)"
+              @dragend="onDragEnd"
+              @pointerdown="onSwipeStart($event, task.id)"
+              @pointermove="onSwipeMove($event, task.id)"
+              @pointerup="(e) => onSwipeEnd(task.id, (e.currentTarget as HTMLElement)?.querySelector('.task-checkbox__box'))"
+              @pointercancel="cancelSwipe(task.id)"
+              :style="swipingTaskId === task.id ? { transform: `translateX(${swipeOffset}px)` } : undefined"
+            >
+              <div class="task-card__row">
+                <span
+                  v-if="sortKey === 'manual'"
+                  class="task-card__drag-handle"
+                  aria-hidden="true"
+                  title="Drag to reorder"
+                >
+                  <span class="material-symbols-outlined">drag_indicator</span>
                 </span>
-              </label>
-
-              <div class="task-card__body">
-                <div class="task-card__head">
-                  <span class="task-card__label">
-                    <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
-                    {{ task.category }}
+                <label class="task-checkbox" :title="task.done ? 'Mark as open' : 'Mark as done'">
+                  <input
+                    type="checkbox"
+                    :checked="task.done"
+                    @change="(e) => toggleTask(task.id, (e.currentTarget as HTMLInputElement).closest('.task-checkbox')?.querySelector('.task-checkbox__box'))"
+                    :aria-label="task.done ? `Reopen ${task.title}` : `Complete ${task.title}`"
+                  />
+                  <span class="task-checkbox__box" aria-hidden="true">
+                    <span class="material-symbols-outlined">check</span>
                   </span>
-                  <span
-                    class="prio-pill"
-                    :class="`prio-pill--${task.priority.toLowerCase()}`"
-                  >{{ task.priority }}</span>
+                </label>
+
+                <div class="task-card__body">
+                  <div class="task-card__head">
+                    <span v-if="task.pinned && !task.done" class="pin-indicator" aria-label="Pinned">
+                      <span class="material-symbols-outlined">push_pin</span>
+                    </span>
+                    <span class="task-card__label">
+                      <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
+                      {{ task.category }}
+                    </span>
+                    <span
+                      class="prio-pill"
+                      :class="`prio-pill--${task.priority.toLowerCase()}`"
+                    >{{ task.priority }}</span>
+                  </div>
+                  <form
+                    v-if="inlineEditingId === task.id"
+                    class="task-card__title-edit"
+                    @submit.prevent="saveInlineEdit"
+                  >
+                    <input
+                      ref="inlineEditingRef"
+                      v-model="inlineEditingValue"
+                      type="text"
+                      @keydown.esc.prevent="cancelInlineEdit"
+                      @blur="saveInlineEdit"
+                      :aria-label="`Edit title for ${task.title}`"
+                    />
+                  </form>
+                  <h3
+                    v-else
+                    class="task-card__title"
+                    :class="{ 'is-editable': !task.done }"
+                    @click="startInlineEdit(task)"
+                    :title="task.done ? '' : 'Click to edit title'"
+                  >{{ task.title }}</h3>
+                  <p v-if="task.details" class="task-card__details">{{ task.details }}</p>
                 </div>
-                <h3>{{ task.title }}</h3>
-                <p v-if="task.details" class="task-card__details">{{ task.details }}</p>
+
+                <div class="task-card__controls">
+                  <button
+                    class="icon-button icon-button--ghost"
+                    :class="task.pinned ? 'icon-button--pinned' : 'icon-button--accent'"
+                    type="button"
+                    @click="togglePinned(task.id)"
+                    :aria-label="task.pinned ? 'Unpin task' : 'Pin task to top'"
+                    :title="task.pinned ? 'Unpin' : 'Pin to top'"
+                  >
+                    <span class="material-symbols-outlined">{{ task.pinned ? 'keep' : 'push_pin' }}</span>
+                  </button>
+                  <button
+                    class="icon-button icon-button--ghost icon-button--accent"
+                    type="button"
+                    @click="openEditModal(task)"
+                    aria-label="Edit task details"
+                    title="Edit details"
+                  >
+                    <span class="material-symbols-outlined">edit</span>
+                  </button>
+                  <button
+                    class="icon-button icon-button--ghost icon-button--danger"
+                    type="button"
+                    @click="deleteTaskWithUndo(task.id)"
+                    aria-label="Delete task"
+                    title="Delete"
+                  >
+                    <span class="material-symbols-outlined">delete</span>
+                  </button>
+                </div>
               </div>
 
-              <div class="task-card__controls">
-                <button
-                  class="icon-button icon-button--ghost icon-button--accent"
-                  type="button"
-                  @click="openEditModal(task)"
-                  aria-label="Edit task"
-                  title="Edit"
-                >
-                  <span class="material-symbols-outlined">edit</span>
-                </button>
-                <button
-                  class="icon-button icon-button--ghost icon-button--danger"
-                  type="button"
-                  @click="promptDeleteTask(task.id)"
-                  aria-label="Delete task"
-                  title="Delete"
-                >
-                  <span class="material-symbols-outlined">delete</span>
-                </button>
+              <div class="task-card__meta">
+                <span class="due-pill" :class="dueTone(task)">
+                  <span class="material-symbols-outlined" aria-hidden="true">event</span>
+                  {{ relativeDue(task.due) }}
+                  <span v-if="!task.done && isOverdue(task.due)" class="overdue-badge">Overdue</span>
+                </span>
               </div>
-            </div>
-
-            <div class="task-card__meta">
-              <span class="due-pill" :class="dueTone(task)">
-                <span class="material-symbols-outlined" aria-hidden="true">event</span>
-                {{ relativeDue(task.due) }}
-                <span v-if="!task.done && isOverdue(task.due)" class="overdue-badge">Overdue</span>
-              </span>
-            </div>
-          </article>
+            </article>
+          </div>
         </transition-group>
 
         <div v-else class="empty-state">
@@ -1023,24 +1396,6 @@ watch(anyModalOpen, (open) => {
       </div>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div v-if="taskToDelete !== null" class="modal-overlay" @click="cancelDelete" role="dialog" aria-modal="true" aria-labelledby="delete-heading">
-      <div class="modal modal--small" @click.stop>
-        <div class="modal-header">
-          <h2 id="delete-heading">Delete task?</h2>
-        </div>
-        <div class="modal-content">
-          <p>This task will be removed from your board. You can't undo this.</p>
-        </div>
-        <div class="modal-actions">
-          <button class="ghost-button" type="button" @click="cancelDelete">Cancel</button>
-          <button class="submit-button submit-button--danger" type="button" @click="confirmDelete">
-            Delete task
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- Keyboard Shortcuts Modal -->
     <div v-if="helpOpen" class="modal-overlay" @click="helpOpen = false" role="dialog" aria-modal="true" aria-labelledby="help-heading">
       <div class="modal modal--small" @click.stop>
@@ -1056,8 +1411,12 @@ watch(anyModalOpen, (open) => {
             <div><dt><kbd>/</kbd></dt><dd>Focus search</dd></div>
             <div><dt><kbd>J</kbd></dt><dd>Jump to first task</dd></div>
             <div><dt><kbd>?</kbd></dt><dd>Show this help</dd></div>
-            <div><dt><kbd>Esc</kbd></dt><dd>Close modal / clear search</dd></div>
-            <div><dt><kbd>Enter</kbd></dt><dd>In quick add: create task</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Close modal · clear search · cancel inline edit</dd></div>
+            <div><dt><kbd>Enter</kbd></dt><dd>Quick add: create · Inline edit: save</dd></div>
+            <div><dt>Click title</dt><dd>Inline rename (open tasks)</dd></div>
+            <div><dt>Drag handle</dt><dd>Reorder (set Sort → Manual)</dd></div>
+            <div><dt>Swipe →</dt><dd>Complete (touch)</dd></div>
+            <div><dt>Swipe ←</dt><dd>Delete with undo (touch)</dd></div>
           </dl>
         </div>
       </div>
@@ -1070,15 +1429,51 @@ watch(anyModalOpen, (open) => {
           v-for="toast in toasts"
           :key="toast.id"
           class="toast"
-          :class="`toast--${toast.tone}`"
+          :class="[`toast--${toast.tone}`, { 'toast--actionable': !!toast.action }]"
           role="status"
         >
-          <span class="material-symbols-outlined" aria-hidden="true">
+          <span class="material-symbols-outlined toast__icon" aria-hidden="true">
             {{ toast.tone === 'danger' ? 'delete' : toast.tone === 'info' ? 'info' : 'check_circle' }}
           </span>
-          {{ toast.message }}
+          <span class="toast__message">{{ toast.message }}</span>
+          <button
+            v-if="toast.action"
+            class="toast__action"
+            type="button"
+            @click="() => { toast.action!.handler(); dismissToast(toast.id) }"
+          >
+            {{ toast.action.label }}
+          </button>
+          <span
+            v-if="toast.action"
+            class="toast__progress"
+            :style="{ animationDuration: `${toast.duration}ms` }"
+            aria-hidden="true"
+          ></span>
         </div>
       </transition-group>
+    </div>
+
+    <!-- Completion celebration bursts -->
+    <div class="celebration-layer" aria-hidden="true">
+      <div
+        v-for="burst in celebrations"
+        :key="burst.id"
+        class="celebration-burst"
+        :style="{ left: `${burst.x}px`, top: `${burst.y}px` }"
+      >
+        <span
+          v-for="p in burst.particles"
+          :key="p.id"
+          class="celebration-particle"
+          :style="{
+            '--dx': `${p.dx}px`,
+            '--dy': `${p.dy}px`,
+            '--color': p.color,
+            '--size': `${p.size}px`,
+          } as Record<string, string>"
+        ></span>
+      </div>
     </div>
   </div>
 </template>
