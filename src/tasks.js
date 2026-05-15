@@ -11,6 +11,7 @@ const seedTasks = [
     done: false,
     pinned: false,
     recurrence: 'weekly',
+    recurrenceEnd: '2026-06-25',
     createdAt: Date.now() - 1000 * 60 * 60 * 4,
   },
   {
@@ -23,6 +24,7 @@ const seedTasks = [
     done: true,
     pinned: false,
     recurrence: 'none',
+    recurrenceEnd: '',
     createdAt: Date.now() - 1000 * 60 * 60 * 8,
   },
   {
@@ -35,6 +37,7 @@ const seedTasks = [
     done: false,
     pinned: false,
     recurrence: 'none',
+    recurrenceEnd: '',
     createdAt: Date.now() - 1000 * 60 * 60 * 12,
   },
   {
@@ -47,12 +50,13 @@ const seedTasks = [
     done: false,
     pinned: false,
     recurrence: 'monthly',
+    recurrenceEnd: '2026-08-17',
     createdAt: Date.now() - 1000 * 60 * 60 * 16,
   },
 ]
 
 function migrate(task) {
-  return { pinned: false, recurrence: 'none', ...task }
+  return { pinned: false, recurrence: 'none', recurrenceEnd: '', ...task }
 }
 
 function read() {
@@ -109,6 +113,7 @@ export function createTask(input) {
     done: false,
     pinned: false,
     recurrence: input.recurrence ?? 'none',
+    recurrenceEnd: input.recurrence === 'none' ? '' : (input.recurrenceEnd ?? ''),
     createdAt: Date.now(),
   }
   const next = [task, ...tasks]

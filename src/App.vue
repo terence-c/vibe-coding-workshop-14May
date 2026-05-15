@@ -31,6 +31,7 @@ interface Task {
   done: boolean
   pinned: boolean
   recurrence: Recurrence
+  recurrenceEnd: string
   createdAt: number
 }
 
@@ -68,7 +69,14 @@ interface CalendarDay {
   isToday: boolean
   isCurrentMonth: boolean
   isSelected: boolean
-  tasks: Task[]
+  occurrences: CalendarOccurrence[]
+}
+
+interface CalendarOccurrence {
+  id: string
+  date: string
+  task: Task
+  isRecurring: boolean
 }
 
 const categoryOptions: Category[] = ['Tool', 'Study', 'Build', 'Personal', 'Admin']
@@ -156,6 +164,7 @@ const newCategory = ref<Category>('Personal')
 const newPriority = ref<Priority>('Medium')
 const newDue = ref(todayInput)
 const newRecurrence = ref<Recurrence>('none')
+const newRecurrenceEnd = ref('')
 const composerFirstFieldRef = ref<HTMLInputElement | null>(null)
 
 // Edit modal state
@@ -166,6 +175,7 @@ const editCategory = ref<Category>('Personal')
 const editPriority = ref<Priority>('Medium')
 const editDue = ref('')
 const editRecurrence = ref<Recurrence>('none')
+const editRecurrenceEnd = ref('')
 const editFirstFieldRef = ref<HTMLInputElement | null>(null)
 
 // Help modal state
@@ -269,6 +279,12 @@ const recurrenceBadge = (recurrence: Recurrence): string => {
   return `Repeats ${recurrence}`
 }
 
+const recurrenceEndLabel = (task: Task): string => {
+  if (task.recurrence === 'none') return ''
+  if (!task.recurrenceEnd) return 'No end date'
+  return `Until ${dateFormatter.format(dateFromInput(task.recurrenceEnd))}`
+}
+
 const addDays = (date: Date, days: number): Date => {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
@@ -297,22 +313,80 @@ const addYearsClamped = (date: Date, years: number): Date => {
   return next
 }
 
-const advanceRecurringDue = (due: string, recurrence: Recurrence): string => {
-  let next = dateFromInput(due)
-  const today = dateFromInput(todayInput)
-  const advance = (date: Date) => {
-    if (recurrence === 'daily') return addDays(date, 1)
-    if (recurrence === 'weekly') return addDays(date, 7)
-    if (recurrence === 'monthly') return addMonthsClamped(date, 1)
-    if (recurrence === 'yearly') return addYearsClamped(date, 1)
-    return date
+const advanceDate = (date: Date, recurrence: Recurrence): Date => {
+  if (recurrence === 'daily') return addDays(date, 1)
+  if (recurrence === 'weekly') return addDays(date, 7)
+  if (recurrence === 'monthly') return addMonthsClamped(date, 1)
+  if (recurrence === 'yearly') return addYearsClamped(date, 1)
+  return new Date(date)
+}
+
+const recurrenceEndIsInvalid = (
+  recurrence: Recurrence,
+  due: string,
+  recurrenceEnd: string,
+): boolean => {
+  return recurrence !== 'none' && !!recurrenceEnd && recurrenceEnd < due
+}
+
+const normalizedRecurrenceEnd = (
+  recurrence: Recurrence,
+  recurrenceEnd: string,
+): string => {
+  return recurrence === 'none' ? '' : recurrenceEnd
+}
+
+const nextRecurringDueAfter = (
+  task: Task,
+  afterDate: string,
+): string | null => {
+  if (task.recurrence === 'none') return null
+
+  const end = task.recurrenceEnd ? dateFromInput(task.recurrenceEnd) : null
+  let cursor = dateFromInput(task.due)
+  const target = dateFromInput(afterDate)
+  let guard = 0
+
+  while (cursor <= target && guard < 500) {
+    cursor = advanceDate(cursor, task.recurrence)
+    guard++
   }
 
-  do {
-    next = advance(next)
-  } while (next <= today && recurrence !== 'none')
+  if (end && cursor > end) return null
+  return toInputDate(cursor)
+}
 
-  return toInputDate(next)
+const taskOccursOnDate = (task: Task, date: Date): boolean => {
+  const dateKey = toInputDate(date)
+  if (task.recurrence === 'none' || task.done) return task.due === dateKey
+  if (dateKey < task.due) return false
+  if (task.recurrenceEnd && dateKey > task.recurrenceEnd) return false
+
+  const start = dateFromInput(task.due)
+  if (task.recurrence === 'daily') return true
+  if (task.recurrence === 'weekly') {
+    const diffDays = Math.round((date.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
+    return diffDays % 7 === 0
+  }
+  if (task.recurrence === 'monthly') {
+    let cursor = start
+    let guard = 0
+    while (toInputDate(cursor) < dateKey && guard < 240) {
+      cursor = addMonthsClamped(cursor, 1)
+      guard++
+    }
+    return toInputDate(cursor) === dateKey
+  }
+  if (task.recurrence === 'yearly') {
+    let cursor = start
+    let guard = 0
+    while (toInputDate(cursor) < dateKey && guard < 80) {
+      cursor = addYearsClamped(cursor, 1)
+      guard++
+    }
+    return toInputDate(cursor) === dateKey
+  }
+  return false
 }
 
 const dueTone = (task: Task): string => {
@@ -364,13 +438,38 @@ const visibleTasks = computed(() => {
 
 const calendarLabel = computed(() => calendarMonthFormatter.format(calendarMonth.value))
 
-const calendarTasksByDate = computed(() => {
-  const byDate = new Map<string, Task[]>()
-  for (const task of visibleTasks.value) {
-    const tasksForDate = byDate.get(task.due) ?? []
-    tasksForDate.push(task)
-    byDate.set(task.due, tasksForDate)
+const calendarOccurrencesByDate = computed(() => {
+  const byDate = new Map<string, CalendarOccurrence[]>()
+  const monthStart = new Date(calendarMonth.value)
+  monthStart.setDate(1)
+  monthStart.setHours(12, 0, 0, 0)
+  const mondayOffset = (monthStart.getDay() + 6) % 7
+  const gridStart = addDays(monthStart, -mondayOffset)
+
+  for (let index = 0; index < 42; index++) {
+    const date = addDays(gridStart, index)
+    const key = toInputDate(date)
+    const occurrences: CalendarOccurrence[] = []
+
+    for (const task of visibleTasks.value) {
+      if (!taskOccursOnDate(task, date)) continue
+      occurrences.push({
+        id: `${task.id}-${key}`,
+        date: key,
+        task,
+        isRecurring: task.recurrence !== 'none' && !task.done,
+      })
+    }
+
+    occurrences.sort(
+      (a, b) =>
+        Number(a.task.done) - Number(b.task.done) ||
+        priorityWeight[a.task.priority] - priorityWeight[b.task.priority] ||
+        a.task.title.localeCompare(b.task.title),
+    )
+    byDate.set(key, occurrences)
   }
+
   return byDate
 })
 
@@ -390,13 +489,13 @@ const calendarDays = computed<CalendarDay[]>(() => {
       isToday: key === todayInput,
       isCurrentMonth: date.getMonth() === monthStart.getMonth(),
       isSelected: key === selectedCalendarDate.value,
-      tasks: calendarTasksByDate.value.get(key) ?? [],
+      occurrences: calendarOccurrencesByDate.value.get(key) ?? [],
     }
   })
 })
 
-const selectedCalendarTasks = computed(() => {
-  return calendarTasksByDate.value.get(selectedCalendarDate.value) ?? []
+const selectedCalendarOccurrences = computed(() => {
+  return calendarOccurrencesByDate.value.get(selectedCalendarDate.value) ?? []
 })
 
 const selectedCalendarLabel = computed(() => {
@@ -469,12 +568,17 @@ function closeComposer() {
   newPriority.value = 'Medium'
   newDue.value = todayInput
   newRecurrence.value = 'none'
+  newRecurrenceEnd.value = ''
   previouslyFocused.value?.focus()
 }
 
 function addTask() {
   const title = newTitle.value.trim()
   if (!title) return
+  if (recurrenceEndIsInvalid(newRecurrence.value, newDue.value || todayInput, newRecurrenceEnd.value)) {
+    pushToast('Repeat end must be on or after the due date', 'danger')
+    return
+  }
 
   createTask({
     title,
@@ -483,6 +587,7 @@ function addTask() {
     priority: newPriority.value,
     due: newDue.value || todayInput,
     recurrence: newRecurrence.value,
+    recurrenceEnd: normalizedRecurrenceEnd(newRecurrence.value, newRecurrenceEnd.value),
   })
   refresh()
   pushToast('Task added to the board')
@@ -535,11 +640,7 @@ function toggleTask(taskId: number, originEl?: Element | null) {
   if (!task) return
 
   if (!task.done && task.recurrence !== 'none') {
-    const nextDue = advanceRecurringDue(task.due, task.recurrence)
-    updateTaskInDb(taskId, { due: nextDue, done: false })
-    refresh()
-    spawnCelebration(originEl ?? null)
-    pushToast(`${recurrenceLabel(task.recurrence)} task moved to ${relativeDue(nextDue)}`, 'info')
+    completeRecurringTask(task, task.due, originEl ?? null)
     return
   }
 
@@ -550,6 +651,22 @@ function toggleTask(taskId: number, originEl?: Element | null) {
     spawnCelebration(originEl ?? null)
   }
   pushToast(task?.done ? 'Marked as open' : 'Marked as done', 'info')
+}
+
+function completeRecurringTask(task: Task, occurrenceDate: string, originEl: Element | null) {
+  const nextDue = nextRecurringDueAfter(task, occurrenceDate)
+  if (nextDue) {
+    updateTaskInDb(task.id, { due: nextDue, done: false })
+    refresh()
+    spawnCelebration(originEl)
+    pushToast(`${recurrenceLabel(task.recurrence)} task moved to ${relativeDue(nextDue)}`, 'info')
+    return
+  }
+
+  updateTaskInDb(task.id, { due: occurrenceDate, done: true })
+  refresh()
+  spawnCelebration(originEl)
+  pushToast('Recurring series completed', 'success')
 }
 
 function togglePinned(taskId: number) {
@@ -568,6 +685,7 @@ function openEditModal(task: Task) {
   editPriority.value = task.priority
   editDue.value = task.due
   editRecurrence.value = task.recurrence
+  editRecurrenceEnd.value = task.recurrenceEnd
   nextTick(() => editFirstFieldRef.value?.focus())
 }
 
@@ -579,11 +697,16 @@ function closeEditModal() {
   editPriority.value = 'Medium'
   editDue.value = ''
   editRecurrence.value = 'none'
+  editRecurrenceEnd.value = ''
   previouslyFocused.value?.focus()
 }
 
 function saveTaskEdit() {
   if (!editingTask.value || !editTitle.value.trim()) return
+  if (recurrenceEndIsInvalid(editRecurrence.value, editDue.value || todayInput, editRecurrenceEnd.value)) {
+    pushToast('Repeat end must be on or after the due date', 'danger')
+    return
+  }
 
   updateTaskInDb(editingTask.value.id, {
     title: editTitle.value.trim(),
@@ -592,6 +715,7 @@ function saveTaskEdit() {
     priority: editPriority.value,
     due: editDue.value,
     recurrence: editRecurrence.value,
+    recurrenceEnd: normalizedRecurrenceEnd(editRecurrence.value, editRecurrenceEnd.value),
   })
   refresh()
   pushToast('Task updated')
@@ -733,6 +857,14 @@ function resetCalendarToToday() {
 function selectCalendarDay(date: string) {
   selectedCalendarDate.value = date
   calendarMonth.value = dateFromInput(date)
+}
+
+function completeCalendarOccurrence(occurrence: CalendarOccurrence, originEl?: Element | null) {
+  if (occurrence.task.recurrence !== 'none' && !occurrence.task.done) {
+    completeRecurringTask(occurrence.task, occurrence.date, originEl ?? null)
+    return
+  }
+  toggleTask(occurrence.task.id, originEl)
 }
 
 function focusFirstTask() {
@@ -954,6 +1086,14 @@ onUnmounted(() => {
 // Prevent body scroll when modal is open
 watch(anyModalOpen, (open) => {
   document.body.style.overflow = open ? 'hidden' : ''
+})
+
+watch(newRecurrence, (recurrence) => {
+  if (recurrence === 'none') newRecurrenceEnd.value = ''
+})
+
+watch(editRecurrence, (recurrence) => {
+  if (recurrence === 'none') editRecurrenceEnd.value = ''
 })
 </script>
 
@@ -1417,6 +1557,7 @@ watch(anyModalOpen, (open) => {
                   <span v-if="task.recurrence !== 'none'" class="recurrence-pill">
                     <span class="material-symbols-outlined" aria-hidden="true">repeat</span>
                     {{ recurrenceBadge(task.recurrence) }}
+                    <span class="recurrence-pill__end">{{ recurrenceEndLabel(task) }}</span>
                   </span>
                 </div>
               </article>
@@ -1469,21 +1610,24 @@ watch(anyModalOpen, (open) => {
                 'is-muted': !day.isCurrentMonth,
                 'is-today': day.isToday,
                 'is-selected': day.isSelected,
-                'has-tasks': day.tasks.length > 0,
+                'has-tasks': day.occurrences.length > 0,
               }"
               type="button"
               role="gridcell"
               @click="selectCalendarDay(day.key)"
-              :aria-label="`${day.key}, ${day.tasks.length} ${day.tasks.length === 1 ? 'task' : 'tasks'}`"
+              :aria-label="`${day.key}, ${day.occurrences.length} ${day.occurrences.length === 1 ? 'task' : 'tasks'}`"
             >
               <span class="calendar-day__number">{{ day.label }}</span>
-              <span v-if="day.tasks.length" class="calendar-day__count">{{ day.tasks.length }}</span>
+              <span v-if="day.occurrences.length" class="calendar-day__count">{{ day.occurrences.length }}</span>
               <span class="calendar-day__tasks" aria-hidden="true">
                 <span
-                  v-for="task in day.tasks.slice(0, 3)"
-                  :key="task.id"
+                  v-for="occurrence in day.occurrences.slice(0, 3)"
+                  :key="occurrence.id"
                   class="calendar-dot"
-                  :class="`calendar-dot--${task.priority.toLowerCase()}`"
+                  :class="[
+                    `calendar-dot--${occurrence.task.priority.toLowerCase()}`,
+                    { 'calendar-dot--recurring': occurrence.isRecurring },
+                  ]"
                 ></span>
               </span>
             </button>
@@ -1495,35 +1639,36 @@ watch(anyModalOpen, (open) => {
                 <p class="panel-kicker">Selected day</p>
                 <h3>{{ selectedCalendarLabel }}</h3>
               </div>
-              <span class="badge">{{ selectedCalendarTasks.length }} {{ selectedCalendarTasks.length === 1 ? 'task' : 'tasks' }}</span>
+              <span class="badge">{{ selectedCalendarOccurrences.length }} {{ selectedCalendarOccurrences.length === 1 ? 'task' : 'tasks' }}</span>
             </div>
 
-            <div v-if="selectedCalendarTasks.length" class="calendar-agenda__list">
+            <div v-if="selectedCalendarOccurrences.length" class="calendar-agenda__list">
               <article
-                v-for="task in selectedCalendarTasks"
-                :key="task.id"
+                v-for="occurrence in selectedCalendarOccurrences"
+                :key="occurrence.id"
                 class="calendar-agenda__task"
-                :class="[cardTone(task.category), { 'is-done': task.done, 'is-overdue': !task.done && isOverdue(task.due) }]"
+                :class="[cardTone(occurrence.task.category), { 'is-done': occurrence.task.done, 'is-overdue': !occurrence.task.done && occurrence.date < todayInput }]"
               >
                 <div>
                   <p class="task-card__label">
-                    <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
-                    {{ task.category }}
-                    <span class="prio-pill" :class="`prio-pill--${task.priority.toLowerCase()}`">{{ task.priority }}</span>
+                    <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[occurrence.task.category] }}</span>
+                    {{ occurrence.task.category }}
+                    <span class="prio-pill" :class="`prio-pill--${occurrence.task.priority.toLowerCase()}`">{{ occurrence.task.priority }}</span>
                   </p>
-                  <h4>{{ task.title }}</h4>
-                  <p v-if="task.details">{{ task.details }}</p>
-                  <span v-if="task.recurrence !== 'none'" class="recurrence-pill">
+                  <h4>{{ occurrence.task.title }}</h4>
+                  <p v-if="occurrence.task.details">{{ occurrence.task.details }}</p>
+                  <span v-if="occurrence.task.recurrence !== 'none'" class="recurrence-pill">
                     <span class="material-symbols-outlined" aria-hidden="true">repeat</span>
-                    {{ recurrenceBadge(task.recurrence) }}
+                    {{ recurrenceBadge(occurrence.task.recurrence) }}
+                    <span class="recurrence-pill__end">{{ recurrenceEndLabel(occurrence.task) }}</span>
                   </span>
                 </div>
                 <div class="calendar-agenda__actions">
-                  <button class="icon-button icon-button--ghost icon-button--accent" type="button" @click="openEditModal(task)" aria-label="Edit task">
+                  <button class="icon-button icon-button--ghost icon-button--accent" type="button" @click="openEditModal(occurrence.task)" aria-label="Edit task">
                     <span class="material-symbols-outlined">edit</span>
                   </button>
-                  <button class="icon-button icon-button--ghost" type="button" @click="(e) => toggleTask(task.id, (e.currentTarget as HTMLElement))" :aria-label="task.done ? 'Reopen task' : 'Complete task'">
-                    <span class="material-symbols-outlined">{{ task.done ? 'refresh' : 'check' }}</span>
+                  <button class="icon-button icon-button--ghost" type="button" @click="(e) => completeCalendarOccurrence(occurrence, (e.currentTarget as HTMLElement))" :aria-label="occurrence.task.done ? 'Reopen task' : 'Complete task'">
+                    <span class="material-symbols-outlined">{{ occurrence.task.done ? 'refresh' : 'check' }}</span>
                   </button>
                 </div>
               </article>
@@ -1640,6 +1785,11 @@ watch(anyModalOpen, (open) => {
                 </option>
               </select>
             </label>
+
+            <label v-if="newRecurrence !== 'none'">
+              <span>Repeat until</span>
+              <input v-model="newRecurrenceEnd" type="date" :min="newDue || todayInput" />
+            </label>
           </div>
 
           <div class="modal-actions">
@@ -1702,6 +1852,11 @@ watch(anyModalOpen, (open) => {
                   {{ option.label }}
                 </option>
               </select>
+            </label>
+
+            <label v-if="editRecurrence !== 'none'">
+              <span>Repeat until</span>
+              <input v-model="editRecurrenceEnd" type="date" :min="editDue || todayInput" />
             </label>
           </div>
 

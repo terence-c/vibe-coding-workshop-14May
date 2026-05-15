@@ -1125,6 +1125,11 @@ a {
   background: var(--green);
 }
 
+.calendar-dot--recurring {
+  border-radius: 0.18rem;
+  transform: rotate(45deg);
+}
+
 .calendar-dot--high {
   background: var(--danger);
 }
@@ -1476,6 +1481,7 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
+  flex-wrap: wrap;
   color: var(--ink-soft);
   font-family: var(--font-mono);
   font-size: 0.68rem;
@@ -1487,6 +1493,11 @@ a {
 .recurrence-pill .material-symbols-outlined {
   font-size: 0.9rem;
   color: var(--danger);
+}
+
+.recurrence-pill__end {
+  color: var(--ink-muted);
+  font-weight: 600;
 }
 
 .tone-overdue { color: var(--danger); font-weight: 700; }
