@@ -18,6 +18,8 @@ type Filter = 'all' | 'open' | 'done'
 type Priority = 'High' | 'Medium' | 'Low'
 type Category = 'Tool' | 'Study' | 'Build' | 'Personal' | 'Admin'
 type SortKey = 'smart' | 'manual' | 'due' | 'priority' | 'created' | 'title'
+type ViewMode = 'board' | 'calendar'
+type Recurrence = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly'
 
 interface Task {
   id: number
@@ -28,6 +30,7 @@ interface Task {
   due: string
   done: boolean
   pinned: boolean
+  recurrence: Recurrence
   createdAt: number
 }
 
@@ -59,8 +62,28 @@ interface CelebrationBurst {
   particles: BurstParticle[]
 }
 
+interface CalendarDay {
+  key: string
+  label: number
+  isToday: boolean
+  isCurrentMonth: boolean
+  isSelected: boolean
+  tasks: Task[]
+}
+
 const categoryOptions: Category[] = ['Tool', 'Study', 'Build', 'Personal', 'Admin']
 const priorityOptions: Priority[] = ['High', 'Medium', 'Low']
+const recurrenceOptions: Array<{ label: string; value: Recurrence }> = [
+  { label: 'Does not repeat', value: 'none' },
+  { label: 'Daily', value: 'daily' },
+  { label: 'Weekly', value: 'weekly' },
+  { label: 'Monthly', value: 'monthly' },
+  { label: 'Yearly', value: 'yearly' },
+]
+const viewOptions: Array<{ label: string; value: ViewMode; icon: string }> = [
+  { label: 'Board', value: 'board', icon: 'view_agenda' },
+  { label: 'Calendar', value: 'calendar', icon: 'calendar_month' },
+]
 const filterOptions: Array<{ label: string; value: Filter }> = [
   { label: 'Everything', value: 'all' },
   { label: 'Open', value: 'open' },
@@ -100,6 +123,16 @@ const heroDateFormatter = new Intl.DateTimeFormat('en-SG', {
   month: 'long',
   day: 'numeric',
 })
+const calendarMonthFormatter = new Intl.DateTimeFormat('en-SG', {
+  month: 'long',
+  year: 'numeric',
+})
+const selectedDayFormatter = new Intl.DateTimeFormat('en-SG', {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+})
+const weekdayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 const prefersReducedMotion =
   typeof window !== 'undefined' &&
@@ -111,6 +144,7 @@ const activeFilter = ref<Filter>('all')
 const sortKey = ref<SortKey>('smart')
 const categoryFilter = ref<Category | 'all'>('all')
 const priorityFilter = ref<Priority | 'all'>('all')
+const viewMode = ref<ViewMode>('board')
 const searchTerm = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
 
@@ -121,6 +155,7 @@ const newDetails = ref('')
 const newCategory = ref<Category>('Personal')
 const newPriority = ref<Priority>('Medium')
 const newDue = ref(todayInput)
+const newRecurrence = ref<Recurrence>('none')
 const composerFirstFieldRef = ref<HTMLInputElement | null>(null)
 
 // Edit modal state
@@ -130,6 +165,7 @@ const editDetails = ref('')
 const editCategory = ref<Category>('Personal')
 const editPriority = ref<Priority>('Medium')
 const editDue = ref('')
+const editRecurrence = ref<Recurrence>('none')
 const editFirstFieldRef = ref<HTMLInputElement | null>(null)
 
 // Help modal state
@@ -188,6 +224,10 @@ const inlineEditingRef = ref<HTMLInputElement | null>(null)
 // Filters disclosure (collapsed by default)
 const filtersOpen = ref(false)
 
+// Calendar view state
+const calendarMonth = ref(new Date(`${todayInput}T12:00:00`))
+const selectedCalendarDate = ref(todayInput)
+
 // Element refs for focus trap
 const previouslyFocused = ref<HTMLElement | null>(null)
 
@@ -195,6 +235,10 @@ const isOverdue = (due: string): boolean => {
   const today = new Date().toLocaleDateString('en-CA')
   return due < today
 }
+
+const toInputDate = (date: Date): string => date.toLocaleDateString('en-CA')
+
+const dateFromInput = (value: string): Date => new Date(`${value || todayInput}T12:00:00`)
 
 const daysUntil = (due: string): number => {
   if (!due) return Number.POSITIVE_INFINITY
@@ -214,6 +258,61 @@ const relativeDue = (due: string): string => {
   if (days === 1) return 'Tomorrow'
   if (days <= 6) return `In ${days} days`
   return dateFormatter.format(new Date(`${due}T12:00:00`))
+}
+
+const recurrenceLabel = (recurrence: Recurrence): string => {
+  return recurrenceOptions.find((option) => option.value === recurrence)?.label ?? 'Does not repeat'
+}
+
+const recurrenceBadge = (recurrence: Recurrence): string => {
+  if (recurrence === 'none') return ''
+  return `Repeats ${recurrence}`
+}
+
+const addDays = (date: Date, days: number): Date => {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+const lastDayOfMonth = (year: number, monthIndex: number): number => {
+  return new Date(year, monthIndex + 1, 0).getDate()
+}
+
+const addMonthsClamped = (date: Date, months: number): Date => {
+  const next = new Date(date)
+  const day = next.getDate()
+  next.setDate(1)
+  next.setMonth(next.getMonth() + months)
+  next.setDate(Math.min(day, lastDayOfMonth(next.getFullYear(), next.getMonth())))
+  return next
+}
+
+const addYearsClamped = (date: Date, years: number): Date => {
+  const next = new Date(date)
+  const month = next.getMonth()
+  const day = next.getDate()
+  next.setFullYear(next.getFullYear() + years, month, 1)
+  next.setDate(Math.min(day, lastDayOfMonth(next.getFullYear(), month)))
+  return next
+}
+
+const advanceRecurringDue = (due: string, recurrence: Recurrence): string => {
+  let next = dateFromInput(due)
+  const today = dateFromInput(todayInput)
+  const advance = (date: Date) => {
+    if (recurrence === 'daily') return addDays(date, 1)
+    if (recurrence === 'weekly') return addDays(date, 7)
+    if (recurrence === 'monthly') return addMonthsClamped(date, 1)
+    if (recurrence === 'yearly') return addYearsClamped(date, 1)
+    return date
+  }
+
+  do {
+    next = advance(next)
+  } while (next <= today && recurrence !== 'none')
+
+  return toInputDate(next)
 }
 
 const dueTone = (task: Task): string => {
@@ -261,6 +360,47 @@ const visibleTasks = computed(() => {
   }
 
   return [...filtered].sort(sorters[sortKey.value])
+})
+
+const calendarLabel = computed(() => calendarMonthFormatter.format(calendarMonth.value))
+
+const calendarTasksByDate = computed(() => {
+  const byDate = new Map<string, Task[]>()
+  for (const task of visibleTasks.value) {
+    const tasksForDate = byDate.get(task.due) ?? []
+    tasksForDate.push(task)
+    byDate.set(task.due, tasksForDate)
+  }
+  return byDate
+})
+
+const calendarDays = computed<CalendarDay[]>(() => {
+  const monthStart = new Date(calendarMonth.value)
+  monthStart.setDate(1)
+  monthStart.setHours(12, 0, 0, 0)
+  const mondayOffset = (monthStart.getDay() + 6) % 7
+  const gridStart = addDays(monthStart, -mondayOffset)
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = addDays(gridStart, index)
+    const key = toInputDate(date)
+    return {
+      key,
+      label: date.getDate(),
+      isToday: key === todayInput,
+      isCurrentMonth: date.getMonth() === monthStart.getMonth(),
+      isSelected: key === selectedCalendarDate.value,
+      tasks: calendarTasksByDate.value.get(key) ?? [],
+    }
+  })
+})
+
+const selectedCalendarTasks = computed(() => {
+  return calendarTasksByDate.value.get(selectedCalendarDate.value) ?? []
+})
+
+const selectedCalendarLabel = computed(() => {
+  return selectedDayFormatter.format(dateFromInput(selectedCalendarDate.value))
 })
 
 const totalCount = computed(() => tasks.value.length)
@@ -328,6 +468,7 @@ function closeComposer() {
   newCategory.value = 'Personal'
   newPriority.value = 'Medium'
   newDue.value = todayInput
+  newRecurrence.value = 'none'
   previouslyFocused.value?.focus()
 }
 
@@ -341,6 +482,7 @@ function addTask() {
     category: newCategory.value,
     priority: newPriority.value,
     due: newDue.value || todayInput,
+    recurrence: newRecurrence.value,
   })
   refresh()
   pushToast('Task added to the board')
@@ -390,9 +532,20 @@ function spawnCelebration(originEl: Element | null) {
 
 function toggleTask(taskId: number, originEl?: Element | null) {
   const task = tasks.value.find((t) => t.id === taskId)
+  if (!task) return
+
+  if (!task.done && task.recurrence !== 'none') {
+    const nextDue = advanceRecurringDue(task.due, task.recurrence)
+    updateTaskInDb(taskId, { due: nextDue, done: false })
+    refresh()
+    spawnCelebration(originEl ?? null)
+    pushToast(`${recurrenceLabel(task.recurrence)} task moved to ${relativeDue(nextDue)}`, 'info')
+    return
+  }
+
   toggleTaskInDb(taskId)
   refresh()
-  const becomingDone = task && !task.done
+  const becomingDone = !task.done
   if (becomingDone) {
     spawnCelebration(originEl ?? null)
   }
@@ -414,6 +567,7 @@ function openEditModal(task: Task) {
   editCategory.value = task.category
   editPriority.value = task.priority
   editDue.value = task.due
+  editRecurrence.value = task.recurrence
   nextTick(() => editFirstFieldRef.value?.focus())
 }
 
@@ -424,6 +578,7 @@ function closeEditModal() {
   editCategory.value = 'Personal'
   editPriority.value = 'Medium'
   editDue.value = ''
+  editRecurrence.value = 'none'
   previouslyFocused.value?.focus()
 }
 
@@ -436,6 +591,7 @@ function saveTaskEdit() {
     category: editCategory.value,
     priority: editPriority.value,
     due: editDue.value,
+    recurrence: editRecurrence.value,
   })
   refresh()
   pushToast('Task updated')
@@ -528,6 +684,8 @@ function jumpToToday() {
   activeFilter.value = 'open'
   sortKey.value = 'due'
   searchTerm.value = ''
+  selectedCalendarDate.value = todayInput
+  calendarMonth.value = dateFromInput(todayInput)
 }
 
 function clearAllFilters() {
@@ -553,6 +711,28 @@ function categoryIcon(category: Category) {
 
 function cardTone(category: Category) {
   return `card--${category.toLowerCase()}`
+}
+
+function setViewMode(mode: ViewMode) {
+  viewMode.value = mode
+  if (mode === 'calendar') {
+    const selected = dateFromInput(selectedCalendarDate.value)
+    calendarMonth.value = selected
+  }
+}
+
+function changeCalendarMonth(delta: number) {
+  calendarMonth.value = addMonthsClamped(calendarMonth.value, delta)
+}
+
+function resetCalendarToToday() {
+  selectedCalendarDate.value = todayInput
+  calendarMonth.value = dateFromInput(todayInput)
+}
+
+function selectCalendarDay(date: string) {
+  selectedCalendarDate.value = date
+  calendarMonth.value = dateFromInput(date)
 }
 
 function focusFirstTask() {
@@ -935,6 +1115,22 @@ watch(anyModalOpen, (open) => {
         </div>
 
         <div class="toolbar__row">
+          <div class="segmented-control segmented-control--view" role="tablist" aria-label="View mode">
+            <button
+              v-for="option in viewOptions"
+              :key="option.value"
+              type="button"
+              class="segmented-control__item segmented-control__item--icon"
+              :class="{ 'is-active': viewMode === option.value }"
+              @click="setViewMode(option.value)"
+              role="tab"
+              :aria-selected="viewMode === option.value"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">{{ option.icon }}</span>
+              {{ option.label }}
+            </button>
+          </div>
+
           <label class="search-field search-field--inline">
             <span class="visually-hidden">Search</span>
             <div>
@@ -1070,175 +1266,278 @@ watch(anyModalOpen, (open) => {
       <section id="tasks-region" class="tasks-panel panel" aria-label="Tasks">
         <div class="panel-heading">
           <div>
-            <p class="panel-kicker">Board</p>
-            <h2>{{ visibleTasks.length }} {{ visibleTasks.length === 1 ? 'task' : 'tasks' }}</h2>
+            <p class="panel-kicker">{{ viewMode === 'calendar' ? 'Calendar' : 'Board' }}</p>
+            <h2 v-if="viewMode === 'calendar'">{{ calendarLabel }}</h2>
+            <h2 v-else>{{ visibleTasks.length }} {{ visibleTasks.length === 1 ? 'task' : 'tasks' }}</h2>
           </div>
           <span v-if="hasActiveFilters" class="badge badge--dark">Filtered</span>
         </div>
 
-        <transition-group v-if="visibleTasks.length" name="card" tag="div" class="task-grid">
-          <div
-            v-for="task in visibleTasks"
-            :key="task.id"
-            class="task-card-wrap"
-            :class="{
-              'is-swiping': swipingTaskId === task.id,
-              'swipe-complete': swipingTaskId === task.id && swipeAction === 'complete',
-              'swipe-delete': swipingTaskId === task.id && swipeAction === 'delete',
-              'is-dragging': draggedTaskId === task.id,
-              'is-drag-target': dragOverTaskId === task.id && draggedTaskId !== task.id,
-            }"
-          >
-            <div class="swipe-action swipe-action--complete" aria-hidden="true">
-              <span class="material-symbols-outlined">check_circle</span>
-              <span>Complete</span>
-            </div>
-            <div class="swipe-action swipe-action--delete" aria-hidden="true">
-              <span>Delete</span>
-              <span class="material-symbols-outlined">delete</span>
-            </div>
-            <article
-              class="task-card"
-              :class="[
-                cardTone(task.category),
-                {
-                  'is-done': task.done,
-                  'is-overdue': !task.done && isOverdue(task.due),
-                  'is-pinned': task.pinned && !task.done,
-                  'is-draggable': sortKey === 'manual',
-                },
-              ]"
-              :draggable="sortKey === 'manual' && inlineEditingId !== task.id ? 'true' : 'false'"
-              @dragstart="onDragStart($event, task.id)"
-              @dragover="onDragOver($event, task.id)"
-              @drop="onDrop($event, task.id)"
-              @dragend="onDragEnd"
-              @pointerdown="onSwipeStart($event, task.id)"
-              @pointermove="onSwipeMove($event, task.id)"
-              @pointerup="(e) => onSwipeEnd(task.id, (e.currentTarget as HTMLElement)?.querySelector('.task-checkbox__box'))"
-              @pointercancel="cancelSwipe(task.id)"
-              :style="swipingTaskId === task.id ? { transform: `translateX(${swipeOffset}px)` } : undefined"
+        <template v-if="viewMode === 'board'">
+          <transition-group v-if="visibleTasks.length" name="card" tag="div" class="task-grid">
+            <div
+              v-for="task in visibleTasks"
+              :key="task.id"
+              class="task-card-wrap"
+              :class="{
+                'is-swiping': swipingTaskId === task.id,
+                'swipe-complete': swipingTaskId === task.id && swipeAction === 'complete',
+                'swipe-delete': swipingTaskId === task.id && swipeAction === 'delete',
+                'is-dragging': draggedTaskId === task.id,
+                'is-drag-target': dragOverTaskId === task.id && draggedTaskId !== task.id,
+              }"
             >
-              <div class="task-card__row">
-                <span
-                  v-if="sortKey === 'manual'"
-                  class="task-card__drag-handle"
-                  aria-hidden="true"
-                  title="Drag to reorder"
-                >
-                  <span class="material-symbols-outlined">drag_indicator</span>
-                </span>
-                <label class="task-checkbox" :title="task.done ? 'Mark as open' : 'Mark as done'">
-                  <input
-                    type="checkbox"
-                    :checked="task.done"
-                    @change="(e) => toggleTask(task.id, (e.currentTarget as HTMLInputElement).closest('.task-checkbox')?.querySelector('.task-checkbox__box'))"
-                    :aria-label="task.done ? `Reopen ${task.title}` : `Complete ${task.title}`"
-                  />
-                  <span class="task-checkbox__box" aria-hidden="true">
-                    <span class="material-symbols-outlined">check</span>
-                  </span>
-                </label>
-
-                <div class="task-card__body">
-                  <div class="task-card__head">
-                    <span v-if="task.pinned && !task.done" class="pin-indicator" aria-label="Pinned">
-                      <span class="material-symbols-outlined">push_pin</span>
-                    </span>
-                    <span class="task-card__label">
-                      <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
-                      {{ task.category }}
-                    </span>
-                    <span
-                      class="prio-pill"
-                      :class="`prio-pill--${task.priority.toLowerCase()}`"
-                    >{{ task.priority }}</span>
-                  </div>
-                  <form
-                    v-if="inlineEditingId === task.id"
-                    class="task-card__title-edit"
-                    @submit.prevent="saveInlineEdit"
+              <div class="swipe-action swipe-action--complete" aria-hidden="true">
+                <span class="material-symbols-outlined">check_circle</span>
+                <span>Complete</span>
+              </div>
+              <div class="swipe-action swipe-action--delete" aria-hidden="true">
+                <span>Delete</span>
+                <span class="material-symbols-outlined">delete</span>
+              </div>
+              <article
+                class="task-card"
+                :class="[
+                  cardTone(task.category),
+                  {
+                    'is-done': task.done,
+                    'is-overdue': !task.done && isOverdue(task.due),
+                    'is-pinned': task.pinned && !task.done,
+                    'is-draggable': sortKey === 'manual',
+                  },
+                ]"
+                :draggable="sortKey === 'manual' && inlineEditingId !== task.id ? 'true' : 'false'"
+                @dragstart="onDragStart($event, task.id)"
+                @dragover="onDragOver($event, task.id)"
+                @drop="onDrop($event, task.id)"
+                @dragend="onDragEnd"
+                @pointerdown="onSwipeStart($event, task.id)"
+                @pointermove="onSwipeMove($event, task.id)"
+                @pointerup="(e) => onSwipeEnd(task.id, (e.currentTarget as HTMLElement)?.querySelector('.task-checkbox__box'))"
+                @pointercancel="cancelSwipe(task.id)"
+                :style="swipingTaskId === task.id ? { transform: `translateX(${swipeOffset}px)` } : undefined"
+              >
+                <div class="task-card__row">
+                  <span
+                    v-if="sortKey === 'manual'"
+                    class="task-card__drag-handle"
+                    aria-hidden="true"
+                    title="Drag to reorder"
                   >
+                    <span class="material-symbols-outlined">drag_indicator</span>
+                  </span>
+                  <label class="task-checkbox" :title="task.done ? 'Mark as open' : 'Mark as done'">
                     <input
-                      ref="inlineEditingRef"
-                      v-model="inlineEditingValue"
-                      type="text"
-                      @keydown.esc.prevent="cancelInlineEdit"
-                      @blur="saveInlineEdit"
-                      :aria-label="`Edit title for ${task.title}`"
+                      type="checkbox"
+                      :checked="task.done"
+                      @change="(e) => toggleTask(task.id, (e.currentTarget as HTMLInputElement).closest('.task-checkbox')?.querySelector('.task-checkbox__box'))"
+                      :aria-label="task.done ? `Reopen ${task.title}` : `Complete ${task.title}`"
                     />
-                  </form>
-                  <h3
-                    v-else
-                    class="task-card__title"
-                    :class="{ 'is-editable': !task.done }"
-                    @click="startInlineEdit(task)"
-                    :title="task.done ? '' : 'Click to edit title'"
-                  >{{ task.title }}</h3>
-                  <p v-if="task.details" class="task-card__details">{{ task.details }}</p>
+                    <span class="task-checkbox__box" aria-hidden="true">
+                      <span class="material-symbols-outlined">check</span>
+                    </span>
+                  </label>
+
+                  <div class="task-card__body">
+                    <div class="task-card__head">
+                      <span v-if="task.pinned && !task.done" class="pin-indicator" aria-label="Pinned">
+                        <span class="material-symbols-outlined">push_pin</span>
+                      </span>
+                      <span class="task-card__label">
+                        <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
+                        {{ task.category }}
+                      </span>
+                      <span
+                        class="prio-pill"
+                        :class="`prio-pill--${task.priority.toLowerCase()}`"
+                      >{{ task.priority }}</span>
+                    </div>
+                    <form
+                      v-if="inlineEditingId === task.id"
+                      class="task-card__title-edit"
+                      @submit.prevent="saveInlineEdit"
+                    >
+                      <input
+                        ref="inlineEditingRef"
+                        v-model="inlineEditingValue"
+                        type="text"
+                        @keydown.esc.prevent="cancelInlineEdit"
+                        @blur="saveInlineEdit"
+                        :aria-label="`Edit title for ${task.title}`"
+                      />
+                    </form>
+                    <h3
+                      v-else
+                      class="task-card__title"
+                      :class="{ 'is-editable': !task.done }"
+                      @click="startInlineEdit(task)"
+                      :title="task.done ? '' : 'Click to edit title'"
+                    >{{ task.title }}</h3>
+                    <p v-if="task.details" class="task-card__details">{{ task.details }}</p>
+                  </div>
+
+                  <div class="task-card__controls">
+                    <button
+                      class="icon-button icon-button--ghost"
+                      :class="task.pinned ? 'icon-button--pinned' : 'icon-button--accent'"
+                      type="button"
+                      @click="togglePinned(task.id)"
+                      :aria-label="task.pinned ? 'Unpin task' : 'Pin task to top'"
+                      :title="task.pinned ? 'Unpin' : 'Pin to top'"
+                    >
+                      <span class="material-symbols-outlined">{{ task.pinned ? 'keep' : 'push_pin' }}</span>
+                    </button>
+                    <button
+                      class="icon-button icon-button--ghost icon-button--accent"
+                      type="button"
+                      @click="openEditModal(task)"
+                      aria-label="Edit task details"
+                      title="Edit details"
+                    >
+                      <span class="material-symbols-outlined">edit</span>
+                    </button>
+                    <button
+                      class="icon-button icon-button--ghost icon-button--danger"
+                      type="button"
+                      @click="deleteTaskWithUndo(task.id)"
+                      aria-label="Delete task"
+                      title="Delete"
+                    >
+                      <span class="material-symbols-outlined">delete</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div class="task-card__controls">
-                  <button
-                    class="icon-button icon-button--ghost"
-                    :class="task.pinned ? 'icon-button--pinned' : 'icon-button--accent'"
-                    type="button"
-                    @click="togglePinned(task.id)"
-                    :aria-label="task.pinned ? 'Unpin task' : 'Pin task to top'"
-                    :title="task.pinned ? 'Unpin' : 'Pin to top'"
-                  >
-                    <span class="material-symbols-outlined">{{ task.pinned ? 'keep' : 'push_pin' }}</span>
-                  </button>
-                  <button
-                    class="icon-button icon-button--ghost icon-button--accent"
-                    type="button"
-                    @click="openEditModal(task)"
-                    aria-label="Edit task details"
-                    title="Edit details"
-                  >
+                <div class="task-card__meta">
+                  <span class="due-pill" :class="dueTone(task)">
+                    <span class="material-symbols-outlined" aria-hidden="true">event</span>
+                    {{ relativeDue(task.due) }}
+                    <span v-if="!task.done && isOverdue(task.due)" class="overdue-badge">Overdue</span>
+                  </span>
+                  <span v-if="task.recurrence !== 'none'" class="recurrence-pill">
+                    <span class="material-symbols-outlined" aria-hidden="true">repeat</span>
+                    {{ recurrenceBadge(task.recurrence) }}
+                  </span>
+                </div>
+              </article>
+            </div>
+          </transition-group>
+
+          <div v-else class="empty-state">
+            <p class="panel-kicker">Nothing here</p>
+            <h3 v-if="hasActiveFilters">No tasks match these filters.</h3>
+            <h3 v-else-if="totalCount === 0">Your board is empty.</h3>
+            <h3 v-else>No tasks match the current view.</h3>
+            <p v-if="hasActiveFilters">Try clearing filters or search to bring the board back.</p>
+            <p v-else>Add your first task with the "New task" button or the quick add bar.</p>
+            <div class="empty-state__actions">
+              <button v-if="hasActiveFilters" class="ghost-button" type="button" @click="clearAllFilters">
+                Clear filters
+              </button>
+              <button v-if="totalCount === 0" class="submit-button" type="button" @click="resetBoard">
+                Load sample tasks
+              </button>
+              <button v-else class="submit-button" type="button" @click="openComposer">
+                New task
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <div v-else class="calendar-view">
+          <div class="calendar-controls">
+            <button class="icon-button icon-button--ghost" type="button" @click="changeCalendarMonth(-1)" aria-label="Previous month">
+              <span class="material-symbols-outlined">chevron_left</span>
+            </button>
+            <button class="ghost-button ghost-button--inline" type="button" @click="resetCalendarToToday">
+              Today
+            </button>
+            <button class="icon-button icon-button--ghost" type="button" @click="changeCalendarMonth(1)" aria-label="Next month">
+              <span class="material-symbols-outlined">chevron_right</span>
+            </button>
+          </div>
+
+          <div class="calendar-grid" role="grid" aria-label="Task calendar">
+            <div v-for="weekday in weekdayLabels" :key="weekday" class="calendar-weekday" role="columnheader">
+              {{ weekday }}
+            </div>
+            <button
+              v-for="day in calendarDays"
+              :key="day.key"
+              class="calendar-day"
+              :class="{
+                'is-muted': !day.isCurrentMonth,
+                'is-today': day.isToday,
+                'is-selected': day.isSelected,
+                'has-tasks': day.tasks.length > 0,
+              }"
+              type="button"
+              role="gridcell"
+              @click="selectCalendarDay(day.key)"
+              :aria-label="`${day.key}, ${day.tasks.length} ${day.tasks.length === 1 ? 'task' : 'tasks'}`"
+            >
+              <span class="calendar-day__number">{{ day.label }}</span>
+              <span v-if="day.tasks.length" class="calendar-day__count">{{ day.tasks.length }}</span>
+              <span class="calendar-day__tasks" aria-hidden="true">
+                <span
+                  v-for="task in day.tasks.slice(0, 3)"
+                  :key="task.id"
+                  class="calendar-dot"
+                  :class="`calendar-dot--${task.priority.toLowerCase()}`"
+                ></span>
+              </span>
+            </button>
+          </div>
+
+          <aside class="calendar-agenda" aria-live="polite">
+            <div class="calendar-agenda__heading">
+              <div>
+                <p class="panel-kicker">Selected day</p>
+                <h3>{{ selectedCalendarLabel }}</h3>
+              </div>
+              <span class="badge">{{ selectedCalendarTasks.length }} {{ selectedCalendarTasks.length === 1 ? 'task' : 'tasks' }}</span>
+            </div>
+
+            <div v-if="selectedCalendarTasks.length" class="calendar-agenda__list">
+              <article
+                v-for="task in selectedCalendarTasks"
+                :key="task.id"
+                class="calendar-agenda__task"
+                :class="[cardTone(task.category), { 'is-done': task.done, 'is-overdue': !task.done && isOverdue(task.due) }]"
+              >
+                <div>
+                  <p class="task-card__label">
+                    <span class="material-symbols-outlined" aria-hidden="true">{{ categoryIcons[task.category] }}</span>
+                    {{ task.category }}
+                    <span class="prio-pill" :class="`prio-pill--${task.priority.toLowerCase()}`">{{ task.priority }}</span>
+                  </p>
+                  <h4>{{ task.title }}</h4>
+                  <p v-if="task.details">{{ task.details }}</p>
+                  <span v-if="task.recurrence !== 'none'" class="recurrence-pill">
+                    <span class="material-symbols-outlined" aria-hidden="true">repeat</span>
+                    {{ recurrenceBadge(task.recurrence) }}
+                  </span>
+                </div>
+                <div class="calendar-agenda__actions">
+                  <button class="icon-button icon-button--ghost icon-button--accent" type="button" @click="openEditModal(task)" aria-label="Edit task">
                     <span class="material-symbols-outlined">edit</span>
                   </button>
-                  <button
-                    class="icon-button icon-button--ghost icon-button--danger"
-                    type="button"
-                    @click="deleteTaskWithUndo(task.id)"
-                    aria-label="Delete task"
-                    title="Delete"
-                  >
-                    <span class="material-symbols-outlined">delete</span>
+                  <button class="icon-button icon-button--ghost" type="button" @click="(e) => toggleTask(task.id, (e.currentTarget as HTMLElement))" :aria-label="task.done ? 'Reopen task' : 'Complete task'">
+                    <span class="material-symbols-outlined">{{ task.done ? 'refresh' : 'check' }}</span>
                   </button>
                 </div>
-              </div>
+              </article>
+            </div>
 
-              <div class="task-card__meta">
-                <span class="due-pill" :class="dueTone(task)">
-                  <span class="material-symbols-outlined" aria-hidden="true">event</span>
-                  {{ relativeDue(task.due) }}
-                  <span v-if="!task.done && isOverdue(task.due)" class="overdue-badge">Overdue</span>
-                </span>
-              </div>
-            </article>
-          </div>
-        </transition-group>
-
-        <div v-else class="empty-state">
-          <p class="panel-kicker">Nothing here</p>
-          <h3 v-if="hasActiveFilters">No tasks match these filters.</h3>
-          <h3 v-else-if="totalCount === 0">Your board is empty.</h3>
-          <h3 v-else>No tasks match the current view.</h3>
-          <p v-if="hasActiveFilters">Try clearing filters or search to bring the board back.</p>
-          <p v-else>Add your first task with the "New task" button or the quick add bar.</p>
-          <div class="empty-state__actions">
-            <button v-if="hasActiveFilters" class="ghost-button" type="button" @click="clearAllFilters">
-              Clear filters
-            </button>
-            <button v-if="totalCount === 0" class="submit-button" type="button" @click="resetBoard">
-              Load sample tasks
-            </button>
-            <button v-else class="submit-button" type="button" @click="openComposer">
-              New task
-            </button>
-          </div>
+            <div v-else class="calendar-agenda__empty">
+              <p class="panel-kicker">Open space</p>
+              <h3>No tasks due here.</h3>
+              <button class="submit-button submit-button--compact" type="button" @click="openComposer">
+                <span class="material-symbols-outlined">add</span>
+                New task
+              </button>
+            </div>
+          </aside>
         </div>
       </section>
 
@@ -1332,6 +1631,15 @@ watch(anyModalOpen, (open) => {
               <span>Due date</span>
               <input v-model="newDue" type="date" />
             </label>
+
+            <label>
+              <span>Repeats</span>
+              <select v-model="newRecurrence">
+                <option v-for="option in recurrenceOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
           </div>
 
           <div class="modal-actions">
@@ -1386,6 +1694,15 @@ watch(anyModalOpen, (open) => {
               <span>Due date</span>
               <input v-model="editDue" type="date" />
             </label>
+
+            <label>
+              <span>Repeats</span>
+              <select v-model="editRecurrence">
+                <option v-for="option in recurrenceOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
           </div>
 
           <div class="modal-actions">
@@ -1413,10 +1730,6 @@ watch(anyModalOpen, (open) => {
             <div><dt><kbd>?</kbd></dt><dd>Show this help</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Close modal · clear search · cancel inline edit</dd></div>
             <div><dt><kbd>Enter</kbd></dt><dd>Quick add: create · Inline edit: save</dd></div>
-            <div><dt>Click title</dt><dd>Inline rename (open tasks)</dd></div>
-            <div><dt>Drag handle</dt><dd>Reorder (set Sort → Manual)</dd></div>
-            <div><dt>Swipe →</dt><dd>Complete (touch)</dd></div>
-            <div><dt>Swipe ←</dt><dd>Delete with undo (touch)</dd></div>
           </dl>
         </div>
       </div>
