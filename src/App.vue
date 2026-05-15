@@ -10,6 +10,7 @@ import {
   resetTasks as resetTasksInDb,
   replaceAll as replaceAllInDb,
 } from './tasks.js'
+import CustomCursor from './CustomCursor.vue'
 
 type Filter = 'all' | 'open' | 'done'
 type Priority = 'High' | 'Medium' | 'Low'
@@ -500,6 +501,7 @@ watch(anyModalOpen, (open) => {
 
 <template>
   <div class="app-shell">
+    <CustomCursor />
     <div class="grid-overlay" aria-hidden="true"></div>
 
     <a class="skip-link" href="#tasks-region">Skip to tasks</a>
@@ -816,7 +818,7 @@ watch(anyModalOpen, (open) => {
 
               <div class="task-card__controls">
                 <button
-                  class="icon-button icon-button--ghost"
+                  class="icon-button icon-button--ghost icon-button--accent"
                   type="button"
                   @click="openEditModal(task)"
                   aria-label="Edit task"
